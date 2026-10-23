@@ -12,6 +12,12 @@ import {
   stepFighterKinematicMovement,
 } from '@shared/index.js';
 import { FighterRenderInput } from '../render/FighterVisual.js';
+import {
+  PeerGuestRoom,
+  PeerHostRoom,
+  RoomLike,
+  generateP2PRoomCode,
+} from './PeerRoomAdapter.js';
 
 export type ConnectionStatus =
   | 'idle'
@@ -107,8 +113,9 @@ function resolveServerUrls(): { wsUrl: string; httpUrl: string } {
 export class NetworkClient {
   private client: Colyseus.Client;
   private httpBaseUrl: string;
-  private room: Colyseus.Room | null = null;
+  private room: RoomLike | null = null;
   private playerToken: string;
+  private usePeerFallback = false;
 
   public status: ConnectionStatus = 'idle';
   public statusMessage = 'Sẵn sàng kết nối';
@@ -155,11 +162,18 @@ export class NetworkClient {
     onProgress?: (msg: string) => void,
     timeoutMs = 15000
   ): Promise<boolean> {
+    let explicitServerConfigured = Boolean(
+      new URLSearchParams(window.location.search).get('server')?.trim() ||
+      localStorage.getItem('rift_duel_server_url')?.trim() ||
+      (import.meta.env.VITE_GAME_SERVER_URL as string | undefined)?.trim()
+    );
+
     try {
       const cfgRes = await fetch('/server-config.json', { cache: 'no-store' });
       if (cfgRes.ok) {
         const cfg = (await cfgRes.json()) as { serverUrl?: string };
         if (cfg?.serverUrl && cfg.serverUrl.trim()) {
+          explicitServerConfigured = true;
           const { wsUrl, httpUrl } = normalizeEndpointUrl(cfg.serverUrl);
           if (httpUrl !== this.httpBaseUrl) {
             this.httpBaseUrl = httpUrl;
@@ -169,6 +183,18 @@ export class NetworkClient {
       }
     } catch {
       // Ignore if server-config.json not present
+    }
+
+    const isLocalhost =
+      window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+    // When deployed on Netlify or another static domain without an explicit Render URL yet,
+    // immediately enable built-in WebRTC Cloud Relay (PeerJS) so rooms work out-of-the-box!
+    if (!isLocalhost && !explicitServerConfigured) {
+      this.usePeerFallback = true;
+      this.status = 'connected';
+      this.statusMessage = 'Máy chủ trực tuyến sẵn sàng';
+      return true;
     }
 
     this.status = 'waking_server';
@@ -185,6 +211,7 @@ export class NetworkClient {
         const res = await fetch(`${this.httpBaseUrl}/health`, { signal: ctrl.signal });
         window.clearTimeout(timer);
         if (res.ok) {
+          this.usePeerFallback = false;
           this.status = 'connected';
           this.statusMessage = 'Máy chủ trực tuyến';
           return true;
@@ -197,9 +224,11 @@ export class NetworkClient {
       await new Promise((r) => setTimeout(r, 900));
     }
 
-    this.status = 'error';
-    this.statusMessage = 'Máy chủ phản hồi chậm hoặc chưa sẵn sàng. Hãy bấm Thử lại.';
-    return false;
+    // Fallback to PeerJS Cloud Relay if Colyseus endpoint could not be reached
+    this.usePeerFallback = true;
+    this.status = 'connected';
+    this.statusMessage = 'Máy chủ trực tuyến sẵn sàng (Cloud P2P)';
+    return true;
   }
 
   public async createRoom(
@@ -213,13 +242,23 @@ export class NetworkClient {
     }
 
     await this.leaveCurrentRoom(true);
-    const room = await this.client.create('rift_room', {
+
+    if (this.usePeerFallback) {
+      const code = generateP2PRoomCode(customRoomCode);
+      const hostRoom = new PeerHostRoom(code, nickname, archetype, this.playerToken);
+      await hostRoom.startHost();
+      this.attachRoomHandlers(hostRoom);
+      this.updateUrlRoomParam(code);
+      return code;
+    }
+
+    const room = (await this.client.create('rift_room', {
       mode: 'create',
       nickname,
       archetype,
       roomCode: customRoomCode,
       playerToken: this.playerToken,
-    });
+    })) as unknown as RoomLike;
 
     this.attachRoomHandlers(room);
     const code = await this.waitForRoomCode(room);
@@ -242,6 +281,15 @@ export class NetworkClient {
       throw new Error('SERVER_UNAVAILABLE: Không thể kết nối tới máy chủ trận đấu.');
     }
 
+    if (this.usePeerFallback) {
+      await this.leaveCurrentRoom(true);
+      const guestRoom = new PeerGuestRoom(code);
+      await guestRoom.connectToHost(nickname, archetype, this.playerToken);
+      this.attachRoomHandlers(guestRoom);
+      this.updateUrlRoomParam(code);
+      return code;
+    }
+
     const res = await fetch(
       `${this.httpBaseUrl}/api/rooms/${encodeURIComponent(code)}?token=${encodeURIComponent(this.playerToken)}`
     );
@@ -260,13 +308,13 @@ export class NetworkClient {
     }
 
     await this.leaveCurrentRoom(true);
-    const room = await this.client.joinById(data.roomId, {
+    const room = (await this.client.joinById(data.roomId, {
       mode: 'join',
       roomCode: code,
       nickname,
       archetype,
       playerToken: this.playerToken,
-    });
+    })) as unknown as RoomLike;
 
     this.attachRoomHandlers(room);
     this.updateUrlRoomParam(code);
@@ -300,7 +348,7 @@ export class NetworkClient {
 
     if (reconnectToken) {
       try {
-        const reconnectedRoom = await this.client.reconnect(reconnectToken);
+        const reconnectedRoom = (await this.client.reconnect(reconnectToken)) as unknown as RoomLike;
         this.attachRoomHandlers(reconnectedRoom);
         return;
       } catch {
@@ -333,7 +381,7 @@ export class NetworkClient {
     this.lastProcessedEventId = 0;
   }
 
-  private waitForRoomCode(room: Colyseus.Room): Promise<string> {
+  private waitForRoomCode(room: RoomLike): Promise<string> {
     return new Promise((resolve) => {
       const existing = (room.state as { roomCode?: string })?.roomCode;
       if (existing) {
@@ -348,7 +396,7 @@ export class NetworkClient {
     });
   }
 
-  private attachRoomHandlers(room: Colyseus.Room): void {
+  private attachRoomHandlers(room: RoomLike): void {
     this.room = room;
     this.status = 'connected';
     this.statusMessage = 'Đã kết nối phòng đấu';
@@ -367,6 +415,10 @@ export class NetworkClient {
     room.onStateChange((state) => {
       this.handleServerStatePatch(state);
     });
+
+    if (room.state && Object.keys(room.state).length > 0) {
+      this.handleServerStatePatch(room.state);
+    }
 
     room.onError((code, message) => {
       this.status = 'error';

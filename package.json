@@ -25,6 +25,7 @@
     "colyseus.js": "0.15.28",
     "cors": "^2.8.5",
     "express": "^4.21.1",
+    "peerjs": "^1.5.5",
     "three": "^0.170.0"
   },
   "devDependencies": {
