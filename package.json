@@ -1,0 +1,42 @@
+{
+  "name": "rift-duel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RIFT DUEL - 3D Real-Time Multiplayer Platform Brawler (Three.js + Colyseus)",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n SERVER,CLIENT \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "tsx --tsconfig server/tsconfig.json server/src/index.ts",
+    "dev:client": "vite --config client/vite.config.ts",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "tsc -p client/tsconfig.json --noEmit && vite build --config client/vite.config.ts",
+    "build:server": "tsc -p server/tsconfig.json",
+    "start:server": "node server/dist/server/src/index.js",
+    "preview:client": "vite preview --config client/vite.config.ts --port 4173",
+    "typecheck": "tsc -p client/tsconfig.json --noEmit && tsc -p server/tsconfig.json --noEmit",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@colyseus/schema": "2.0.37",
+    "@colyseus/ws-transport": "0.15.3",
+    "colyseus": "0.15.57",
+    "colyseus.js": "0.15.28",
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "@types/three": "^0.170.0",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.5"
+  }
+}
