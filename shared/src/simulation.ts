@@ -408,7 +408,7 @@ export function stepFighterKinematicMovement(
   fighter.y += fighter.vy * dt;
   fighter.z += fighter.vz * dt;
 
-  // Stage 3D Platform Collision (Top surface Y=0, slab down to -ARENA_SLAB_THICKNESS_Y)
+  // Stage 3D Platform Collision (Top surface Y=0, slab down to -ARENA_SLAB_THICKNESS_Y, plus under-island rock)
   const overStageNow = isPointOverStageXZ(fighter.x, fighter.z, 0.25);
   const wasAboveTop = prevY >= -0.18;
 
@@ -423,31 +423,65 @@ export function stepFighterKinematicMovement(
   } else if (!overStageNow && fighter.grounded) {
     // Walked or knocked off any of the 4 edges of the 3D arena
     fighter.grounded = false;
-  } else if (
-    overStageNow &&
-    !wasAboveTop &&
-    fighter.y > -SIM_CONFIG.ARENA_SLAB_THICKNESS_Y &&
-    fighter.y < -0.15
-  ) {
-    // Side-wall collision against the floating stone slab so fighters don't phase through the side
-    const distLeft = Math.abs(prevX - -SIM_CONFIG.ARENA_HALF_WIDTH_X);
-    const distRight = Math.abs(prevX - SIM_CONFIG.ARENA_HALF_WIDTH_X);
-    const distFront = Math.abs(prevZ - SIM_CONFIG.ARENA_HALF_DEPTH_Z);
-    const distBack = Math.abs(prevZ - -SIM_CONFIG.ARENA_HALF_DEPTH_Z);
-    const minDist = Math.min(distLeft, distRight, distFront, distBack);
+  } else if (fighter.y < -0.05 && fighter.y > -9.6) {
+    // Watertight 3D Side-Wall, Under-Cone & Ceiling Collision so fighters NEVER clip into the stage or under-rock
+    const slabBottom = -SIM_CONFIG.ARENA_SLAB_THICKNESS_Y;
+    const taper =
+      fighter.y >= slabBottom
+        ? 1.0
+        : Math.max(0.25, 1.0 - (-fighter.y - SIM_CONFIG.ARENA_SLAB_THICKNESS_Y) / 7.5);
+    const wallHalfW = SIM_CONFIG.ARENA_HALF_WIDTH_X * taper + 0.34;
+    const wallHalfD = SIM_CONFIG.ARENA_HALF_DEPTH_Z * taper + 0.34;
 
-    if (minDist === distLeft) {
-      fighter.x = -SIM_CONFIG.ARENA_HALF_WIDTH_X - 0.26;
-      fighter.vx = Math.min(0, fighter.vx);
-    } else if (minDist === distRight) {
-      fighter.x = SIM_CONFIG.ARENA_HALF_WIDTH_X + 0.26;
-      fighter.vx = Math.max(0, fighter.vx);
-    } else if (minDist === distFront) {
-      fighter.z = SIM_CONFIG.ARENA_HALF_DEPTH_Z + 0.26;
-      fighter.vz = Math.max(0, fighter.vz);
-    } else {
-      fighter.z = -SIM_CONFIG.ARENA_HALF_DEPTH_Z - 0.26;
-      fighter.vz = Math.min(0, fighter.vz);
+    if (Math.abs(fighter.x) < wallHalfW && Math.abs(fighter.z) < wallHalfD) {
+      // Check if hitting ceiling from underneath the island
+      const headY = fighter.y + SIM_CONFIG.HURTBOX_HEIGHT;
+      const prevHeadY = prevY + SIM_CONFIG.HURTBOX_HEIGHT;
+      if (prevHeadY <= slabBottom + 0.15 && headY > slabBottom && fighter.vy > 0) {
+        fighter.y = slabBottom - SIM_CONFIG.HURTBOX_HEIGHT;
+        fighter.vy = -fighter.vy * 0.25;
+      } else {
+        const distLeft = Math.abs(prevX - -wallHalfW);
+        const distRight = Math.abs(prevX - wallHalfW);
+        const distFront = Math.abs(prevZ - wallHalfD);
+        const distBack = Math.abs(prevZ - -wallHalfD);
+        const minDist = Math.min(distLeft, distRight, distFront, distBack);
+
+        if (minDist === distLeft) {
+          fighter.x = -wallHalfW;
+          fighter.vx = Math.min(0, fighter.vx);
+        } else if (minDist === distRight) {
+          fighter.x = wallHalfW;
+          fighter.vx = Math.max(0, fighter.vx);
+        } else if (minDist === distFront) {
+          fighter.z = wallHalfD;
+          fighter.vz = Math.max(0, fighter.vz);
+        } else {
+          fighter.z = -wallHalfD;
+          fighter.vz = Math.min(0, fighter.vz);
+        }
+      }
+    }
+  }
+
+  // Solid 3D Stage Corner Pillars Collision (prevents walking or dashing through pillars)
+  for (const pillar of SIM_CONFIG.STAGE_PILLARS) {
+    if (fighter.y < pillar.height && fighter.y + SIM_CONFIG.HURTBOX_HEIGHT > 0) {
+      const dx = fighter.x - pillar.x;
+      const dz = fighter.z - pillar.z;
+      const distXZ = Math.hypot(dx, dz);
+      const minRadius = pillar.radius + SIM_CONFIG.FIGHTER_PUSH_RADIUS;
+      if (distXZ < minRadius) {
+        const nx = distXZ > 1e-4 ? dx / distXZ : 0;
+        const nz = distXZ > 1e-4 ? dz / distXZ : 1;
+        fighter.x = pillar.x + nx * minRadius;
+        fighter.z = pillar.z + nz * minRadius;
+        const vn = fighter.vx * nx + fighter.vz * nz;
+        if (vn < 0) {
+          fighter.vx -= vn * nx;
+          fighter.vz -= vn * nz;
+        }
+      }
     }
   }
 
@@ -808,7 +842,7 @@ export function stepWorldTick(
     }
   }
 
-  // 2. Soft fighter-to-fighter 3D body separation on X/Z when overlapping at similar Y
+  // 2. Solid fighter-to-fighter 3D body separation on X/Z when overlapping at similar Y
   const fighterArr = Array.from(world.fighters.values());
   if (fighterArr.length === 2) {
     const [a, b] = fighterArr;
@@ -833,6 +867,17 @@ export function stepWorldTick(
         a.z -= nz * overlap;
         b.x += nx * overlap;
         b.z += nz * overlap;
+
+        // Dampen closing velocity along collision normal so fighters don't phase into each other
+        const relVx = b.vx - a.vx;
+        const relVz = b.vz - a.vz;
+        const closingSpeed = relVx * nx + relVz * nz;
+        if (closingSpeed < 0) {
+          a.vx += nx * closingSpeed * 0.5;
+          a.vz += nz * closingSpeed * 0.5;
+          b.vx -= nx * closingSpeed * 0.5;
+          b.vz -= nz * closingSpeed * 0.5;
+        }
       }
     }
   }

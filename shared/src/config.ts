@@ -35,7 +35,13 @@ export const SIM_CONFIG = {
   // 3D Hurtbox Capsule (independent from visual mesh/cape/weapons)
   HURTBOX_RADIUS: 0.58,
   HURTBOX_HEIGHT: 1.65,
-  FIGHTER_PUSH_RADIUS: 0.48,
+  FIGHTER_PUSH_RADIUS: 0.56,
+
+  // Solid 3D Stage Corner Pillars (matched 1:1 between simulation & ArenaBuilder)
+  STAGE_PILLARS: [
+    { x: -8.0, z: -5.1, radius: 0.72, height: 3.4 },
+    { x: 8.0, z: -5.1, radius: 0.72, height: 3.4 },
+  ],
 
   // Movement & Jump Physics
   GRAVITY: 32.0,

@@ -52,9 +52,10 @@ export class ArenaBuilder {
         const isCenter = Math.abs(x) <= 2 && Math.abs(z) <= 2;
         const src = isCenter ? decTileGltf.scene : tileGltf.scene;
         const tile = src.clone(true);
-        tile.position.set(x, -0.04, z);
+        tile.position.set(x, -0.045, z);
         if (isCenter) {
-          tile.scale.set(2, 1, 2);
+          // Flatten vertical relief on decorated center tiles so the combat floor at Y=0 is 100% flush
+          tile.scale.set(2, 0.08, 2);
         }
         tile.traverse((c) => {
           if ((c as THREE.Mesh).isMesh) {
@@ -65,15 +66,15 @@ export class ArenaBuilder {
       }
     }
 
-    // Perimeter stone foundation blocks around the slab edges
+    // Perimeter stone foundation blocks UNDERNEATH the slab edges (top flush at Y = -0.02, never sticking above floor)
     for (let x = -8; x <= 8; x += 4) {
       const fNorth = foundGltf.scene.clone(true);
-      fNorth.position.set(x, -1.6, -halfD + 0.4);
+      fNorth.position.set(x, -3.02, -halfD + 0.4);
       fNorth.scale.set(2, 1.5, 1);
       this.group.add(fNorth);
 
       const fSouth = foundGltf.scene.clone(true);
-      fSouth.position.set(x, -1.6, halfD - 0.4);
+      fSouth.position.set(x, -3.02, halfD - 0.4);
       fSouth.scale.set(2, 1.5, 1);
       this.group.add(fSouth);
     }
@@ -132,15 +133,14 @@ export class ArenaBuilder {
     runeLineZ.position.set(0, 0.015, 0);
     this.group.add(runeLineX, runeLineZ);
 
-    // 4. North Edge Decorative Pillars & Lit Torches (only at back Z = -halfD so they never obscure fighters)
+    // 4. Solid Corner Pillars (matched 1:1 with SIM_CONFIG.STAGE_PILLARS physics colliders)
     const pillarGltf = assets.getGLTF('pillar_decorated');
     const torchGltf = assets.getGLTF('torch_lit');
-    const northPillarsX = [-8.4, -4.2, 4.2, 8.4];
 
-    for (const px of northPillarsX) {
+    for (const colPillar of SIM_CONFIG.STAGE_PILLARS) {
       const p = pillarGltf.scene.clone(true);
-      p.position.set(px, 0, -halfD + 0.35);
-      p.scale.set(0.85, 0.85, 0.85);
+      p.position.set(colPillar.x, 0, colPillar.z);
+      p.scale.set(0.75, 0.85, 0.75);
       p.traverse((c) => {
         if ((c as THREE.Mesh).isMesh) {
           c.castShadow = true;
@@ -149,8 +149,27 @@ export class ArenaBuilder {
       });
       this.group.add(p);
 
+      // Glowing collider ring around the pillar base so players clearly see its physical boundary
+      const pRingGeo = new THREE.RingGeometry(colPillar.radius - 0.08, colPillar.radius + 0.06, 24);
+      pRingGeo.rotateX(-Math.PI / 2);
+      const pRing = new THREE.Mesh(pRingGeo, borderMat);
+      pRing.position.set(colPillar.x, 0.02, colPillar.z);
+      this.group.add(pRing);
+
       const t = torchGltf.scene.clone(true);
-      t.position.set(px, 1.4, -halfD + 0.65);
+      t.position.set(colPillar.x, 1.45, colPillar.z + 0.48);
+      this.group.add(t);
+    }
+
+    // Rear Floating Shrine Pillars (outside the stage at Z = -8.4 so they never block gameplay)
+    for (const px of [-4.2, 4.2]) {
+      const p = pillarGltf.scene.clone(true);
+      p.position.set(px, -0.6, -halfD - 2.4);
+      p.scale.set(0.85, 0.85, 0.85);
+      this.group.add(p);
+
+      const t = torchGltf.scene.clone(true);
+      t.position.set(px, 0.9, -halfD - 1.9);
       this.group.add(t);
     }
 
