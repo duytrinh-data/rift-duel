@@ -121,6 +121,8 @@ export function createInitialFighterState(
     weaponDurability: 0,
 
     lastProcessedInputSeq: 0,
+    bufferedAction: '',
+    bufferedActionTicks: 0,
     prevJumpDown: false,
     prevDodgeDown: false,
     prevLightDown: false,
@@ -205,6 +207,8 @@ export function resetFighterForMatch(fighter: FighterSimState): void {
   fighter.weaponDurability = 0;
   fighter.rematchVote = false;
 
+  fighter.bufferedAction = '';
+  fighter.bufferedActionTicks = 0;
   fighter.prevJumpDown = false;
   fighter.prevDodgeDown = false;
   fighter.prevLightDown = false;
@@ -329,13 +333,15 @@ export function stepFighterKinematicMovement(
     }
   }
 
-  // Horizontal acceleration & friction
+  // Horizontal acceleration & friction (scaled by archetype speedMult)
   if (canAct) {
-    const maxSpeed = fighter.grounded
+    const archMod = SIM_CONFIG.ARCHETYPE_MODIFIERS[fighter.archetype] ?? SIM_CONFIG.ARCHETYPE_MODIFIERS.vanguard;
+    const baseMaxSpeed = fighter.grounded
       ? fighter.hasWeapon
         ? SIM_CONFIG.MAX_GROUND_SPEED_ARMED
         : SIM_CONFIG.MAX_GROUND_SPEED_UNARMED
       : SIM_CONFIG.MAX_AIR_SPEED;
+    const maxSpeed = baseMaxSpeed * archMod.speedMult;
 
     const accel = fighter.grounded ? SIM_CONFIG.GROUND_ACCEL : SIM_CONFIG.AIR_ACCEL;
     const friction = fighter.grounded ? SIM_CONFIG.GROUND_FRICTION : SIM_CONFIG.AIR_DRAG;
@@ -496,6 +502,53 @@ export function stepFighterKinematicMovement(
   }
 
   return didJump;
+}
+
+export function canFighterStartAction(
+  fighter: Pick<FighterSimState, 'state'>
+): boolean {
+  return (
+    fighter.state === 'idle' ||
+    fighter.state === 'move' ||
+    fighter.state === 'jump' ||
+    fighter.state === 'fall'
+  );
+}
+
+export function chooseAttackId(
+  fighter: Pick<
+    FighterSimState,
+    'state' | 'attackCooldownTicks' | 'airRecoveriesLeft' | 'hasWeapon' | 'grounded'
+  >,
+  recoveryPressed: boolean,
+  heavyPressed: boolean,
+  lightPressed: boolean
+): AttackId | null {
+  if (!canFighterStartAction(fighter) || fighter.attackCooldownTicks > 0) {
+    return null;
+  }
+  if (recoveryPressed && fighter.airRecoveriesLeft > 0) {
+    return fighter.hasWeapon ? 'sword_recovery' : 'unarmed_recovery';
+  }
+  if (heavyPressed) {
+    return fighter.hasWeapon
+      ? fighter.grounded
+        ? 'sword_heavy_ground'
+        : 'sword_heavy_air'
+      : fighter.grounded
+        ? 'unarmed_heavy_ground'
+        : 'unarmed_heavy_air';
+  }
+  if (lightPressed) {
+    return fighter.hasWeapon
+      ? fighter.grounded
+        ? 'sword_light_ground'
+        : 'sword_light_air'
+      : fighter.grounded
+        ? 'unarmed_light_ground'
+        : 'unarmed_light_air';
+  }
+  return null;
 }
 
 function getOpponent(world: SimulationWorld, self: FighterSimState): FighterSimState | undefined {
@@ -665,6 +718,8 @@ export function stepWorldTick(
 
     // State machine transitions
     if (fighter.state === 'hitstun') {
+      fighter.bufferedAction = '';
+      fighter.bufferedActionTicks = 0;
       fighter.hitstunTicks--;
       if (fighter.hitstunTicks <= 0) {
         fighter.state = fighter.grounded ? 'idle' : 'fall';
@@ -715,14 +770,40 @@ export function stepWorldTick(
       }
     }
 
-    const canStartAction =
-      fighter.state === 'idle' ||
-      fighter.state === 'move' ||
-      fighter.state === 'jump' ||
-      fighter.state === 'fall';
+    // 6-Tick Action Input Buffer (for recovery/heavy/light/dodge/weapon during non-hitstun states)
+    const pressedNow = recoveryJustPressed
+      ? 'recovery'
+      : heavyJustPressed
+        ? 'heavy'
+        : lightJustPressed
+          ? 'light'
+          : dodgeJustPressed
+            ? 'dodge'
+            : weaponJustPressed
+              ? 'weapon'
+              : '';
+
+    if (pressedNow && fighter.state !== 'hitstun') {
+      fighter.bufferedAction = pressedNow;
+      fighter.bufferedActionTicks = SIM_CONFIG.ACTION_BUFFER_TICKS;
+    } else if (fighter.bufferedActionTicks > 0) {
+      fighter.bufferedActionTicks--;
+      if (fighter.bufferedActionTicks <= 0) {
+        fighter.bufferedAction = '';
+      }
+    }
+
+    const canStartAction = canFighterStartAction(fighter);
+    const effectiveDodge = dodgeJustPressed || fighter.bufferedAction === 'dodge';
+    const effectiveWeapon = weaponJustPressed || fighter.bufferedAction === 'weapon';
+    const effectiveRecovery = recoveryJustPressed || fighter.bufferedAction === 'recovery';
+    const effectiveHeavy = heavyJustPressed || fighter.bufferedAction === 'heavy';
+    const effectiveLight = lightJustPressed || fighter.bufferedAction === 'light';
 
     // Handle Dodge input
-    if (canStartAction && dodgeJustPressed && fighter.dodgeCooldownTicks <= 0) {
+    if (canStartAction && effectiveDodge && fighter.dodgeCooldownTicks <= 0) {
+      fighter.bufferedAction = '';
+      fighter.bufferedActionTicks = 0;
       fighter.state = 'dodge';
       fighter.stateTicks = 0;
       fighter.dodgeCooldownTicks = fighter.grounded
@@ -747,8 +828,10 @@ export function stepWorldTick(
     }
 
     // Handle Weapon Pickup / Throw (KeyE)
-    if (canStartAction && weaponJustPressed) {
+    if (canFighterStartAction(fighter) && effectiveWeapon) {
       if (fighter.hasWeapon) {
+        fighter.bufferedAction = '';
+        fighter.bufferedActionTicks = 0;
         // Throw held weapon in 3D space along facing direction
         const opponent = getOpponent(world, fighter);
         if (
@@ -784,49 +867,38 @@ export function stepWorldTick(
         world.weapon.flightTicksLeft = SIM_CONFIG.WEAPON_FLIGHT_MAX_TICKS;
 
         pushEvent(world, 'throw', fighter.slot, 0, world.weapon.x, world.weapon.y, world.weapon.z);
-      } else if (world.weapon.status === 'on_ground') {
-        const dist3D = Math.hypot(
+      } else if (world.weapon.status === 'on_ground' && world.weapon.y <= 2.2) {
+        const distXZ = Math.hypot(
           fighter.x - world.weapon.x,
-          fighter.y - world.weapon.y,
           fighter.z - world.weapon.z
         );
-        if (dist3D <= SIM_CONFIG.WEAPON_PICKUP_RADIUS) {
+        if (distXZ <= SIM_CONFIG.WEAPON_PICKUP_RADIUS && Math.abs(fighter.y - world.weapon.y) <= 2.0) {
+          fighter.bufferedAction = '';
+          fighter.bufferedActionTicks = 0;
           fighter.hasWeapon = true;
           fighter.weaponDurability = SIM_CONFIG.WEAPON_MAX_DURABILITY;
           fighter.state = 'pickup';
           fighter.stateTicks = 0;
-          world.weapon.status = 'held';
-          world.weapon.holderSlot = fighter.slot;
+          // Immediately schedule the next weapon drop from the sky at a new arena spawn pad!
+          const opp = getOpponent(world, fighter);
+          world.weapon.status = 'respawning';
+          world.weapon.holderSlot = 0;
+          world.weapon.respawnTimerTicks =
+            opp && !opp.hasWeapon ? 45 : SIM_CONFIG.WEAPON_RESPAWN_TICKS;
           pushEvent(world, 'pickup', fighter.slot, 0, fighter.x, fighter.y + 0.8, fighter.z);
         }
       }
     }
 
     // Handle Attacks (Light J, Heavy K, Recovery L)
-    if (canStartAction && fighter.attackCooldownTicks <= 0) {
-      if (recoveryJustPressed && fighter.airRecoveriesLeft > 0) {
-        fighter.airRecoveriesLeft--;
-        const atkId: AttackId = fighter.hasWeapon ? 'sword_recovery' : 'unarmed_recovery';
-        startAttack(world, fighter, atkId, input.moveX, input.moveZ);
-      } else if (heavyJustPressed) {
-        const atkId: AttackId = fighter.hasWeapon
-          ? fighter.grounded
-            ? 'sword_heavy_ground'
-            : 'sword_heavy_air'
-          : fighter.grounded
-            ? 'unarmed_heavy_ground'
-            : 'unarmed_heavy_air';
-        startAttack(world, fighter, atkId, input.moveX, input.moveZ);
-      } else if (lightJustPressed) {
-        const atkId: AttackId = fighter.hasWeapon
-          ? fighter.grounded
-            ? 'sword_light_ground'
-            : 'sword_light_air'
-          : fighter.grounded
-            ? 'unarmed_light_ground'
-            : 'unarmed_light_air';
-        startAttack(world, fighter, atkId, input.moveX, input.moveZ);
+    const chosenAtk = chooseAttackId(fighter, effectiveRecovery, effectiveHeavy, effectiveLight);
+    if (chosenAtk) {
+      fighter.bufferedAction = '';
+      fighter.bufferedActionTicks = 0;
+      if (ATTACK_CONFIGS[chosenAtk].isRecovery) {
+        fighter.airRecoveriesLeft = Math.max(0, fighter.airRecoveriesLeft - 1);
       }
+      startAttack(world, fighter, chosenAtk, input.moveX, input.moveZ);
     }
 
     // Step 3D kinematic movement
@@ -908,11 +980,16 @@ export function stepWorldTick(
 
       if (intersectSphereHurtbox3D(hx, hy, hz, cfg.hitboxRadius, target)) {
         hitSet.add(target.sessionId);
+        const atkMod =
+          SIM_CONFIG.ARCHETYPE_MODIFIERS[attacker.archetype] ??
+          SIM_CONFIG.ARCHETYPE_MODIFIERS.vanguard;
+        const scaledDamage = Math.round(cfg.damage * atkMod.attackDamageMult);
+
         applyHitToTarget(
           world,
           attacker.slot,
           target,
-          cfg.damage,
+          scaledDamage,
           cfg.baseKnockback,
           cfg.knockbackScaling,
           cfg.launchAngleDeg,
@@ -925,6 +1002,17 @@ export function stepWorldTick(
           cfg.isHeavy ? 'hit_heavy' : 'hit_light'
         );
         attacker.hitstopTicks = cfg.hitstopTicks;
+
+        // Deplete weapon durability on landed sword attacks (P1-6)
+        if (cfg.requiresWeapon && attacker.hasWeapon) {
+          attacker.weaponDurability = Math.max(
+            0,
+            attacker.weaponDurability - SIM_CONFIG.WEAPON_DURABILITY_COST_PER_HIT
+          );
+          if (attacker.weaponDurability <= 0) {
+            attacker.hasWeapon = false;
+          }
+        }
       }
     }
   }
@@ -945,9 +1033,11 @@ export function stepWorldTick(
       if (fighter.hasWeapon) {
         fighter.hasWeapon = false;
         fighter.weaponDurability = 0;
-        world.weapon.status = 'respawning';
-        world.weapon.holderSlot = 0;
-        world.weapon.respawnTimerTicks = 120;
+        if (world.weapon.status !== 'on_ground') {
+          world.weapon.status = 'respawning';
+          world.weapon.holderSlot = 0;
+          world.weapon.respawnTimerTicks = 60;
+        }
       }
       pushEvent(world, 'ko', 0, fighter.slot, fighter.x, fighter.y, fighter.z);
 
@@ -1013,7 +1103,12 @@ function applyHitToTarget(
 ): void {
   target.damage = Math.min(999, target.damage + damage);
 
-  const kbSpeed = computeKnockbackMagnitude(baseKnockback, knockbackScaling, target.damage);
+  const defMod =
+    SIM_CONFIG.ARCHETYPE_MODIFIERS[target.archetype] ??
+    SIM_CONFIG.ARCHETYPE_MODIFIERS.vanguard;
+  const kbSpeed =
+    computeKnockbackMagnitude(baseKnockback, knockbackScaling, target.damage) *
+    defMod.knockbackReceivedMult;
   const angleRad = (launchAngleDeg * Math.PI) / 180;
   const horizSpeed = kbSpeed * Math.cos(angleRad);
   const vertSpeed = kbSpeed * Math.sin(angleRad);
@@ -1089,21 +1184,29 @@ function updateWeaponSim(world: SimulationWorld, dt: number): void {
   if (w.status === 'respawning') {
     w.respawnTimerTicks--;
     if (w.respawnTimerTicks <= 0) {
+      const pads = SIM_CONFIG.WEAPON_SPAWN_PADS;
+      const pad = pads[w.id % pads.length];
       w.id++;
       w.status = 'on_ground';
       w.holderSlot = 0;
       w.throwerSlot = 0;
-      w.x = 0;
-      w.y = 0;
-      w.z = 0;
+      w.x = pad.x;
+      w.y = 5.4; // Drop from the sky onto the arena!
+      w.z = pad.z;
       w.vx = 0;
-      w.vy = 0;
+      w.vy = -14.0;
       w.vz = 0;
     }
     return;
   }
 
   if (w.status === 'on_ground') {
+    if (w.y > 0) {
+      w.y = Math.max(0, w.y + w.vy * dt);
+      if (w.y === 0) {
+        w.vy = 0;
+      }
+    }
     w.rotationY += 1.8 * dt;
     return;
   }

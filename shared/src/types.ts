@@ -75,6 +75,8 @@ export interface AttackConfig {
   animClip: string;
 }
 
+export type BufferedActionType = '' | 'recovery' | 'heavy' | 'light' | 'dodge' | 'weapon';
+
 export interface FighterSimState {
   sessionId: string;
   slot: 1 | 2;
@@ -121,8 +123,10 @@ export interface FighterSimState {
   hasWeapon: boolean;
   weaponDurability: number;
 
-  // Input tracking
+  // Input tracking & action buffer
   lastProcessedInputSeq: number;
+  bufferedAction: BufferedActionType;
+  bufferedActionTicks: number;
   prevJumpDown: boolean;
   prevDodgeDown: boolean;
   prevLightDown: boolean;

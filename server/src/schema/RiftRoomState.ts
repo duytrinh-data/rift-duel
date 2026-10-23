@@ -22,16 +22,23 @@ export class FighterNetSchema extends Schema {
   @type('uint8') groundJumpsLeft: number = 1;
   @type('uint8') airJumpsLeft: number = 2;
   @type('uint8') airRecoveriesLeft: number = 1;
+  @type('uint8') coyoteTicks: number = 0;
+  @type('uint8') jumpBufferTicks: number = 0;
 
   @type('uint8') stocks: number = 3;
   @type('uint16') damage: number = 0;
   @type('string') state: string = 'idle';
   @type('uint16') stateTicks: number = 0;
   @type('string') activeAttackId: string = '';
+  @type('uint32') attackInstanceId: number = 0;
   @type('uint16') attackCooldownTicks: number = 0;
   @type('uint16') dodgeCooldownTicks: number = 0;
+  @type('float32') dodgeDirX: number = 0;
+  @type('float32') dodgeDirZ: number = 0;
+  @type('uint8') hitstopTicks: number = 0;
   @type('uint16') invulnerableTicks: number = 0;
   @type('boolean') hasWeapon: boolean = false;
+  @type('uint8') weaponDurability: number = 0;
   @type('uint32') lastProcessedInputSeq: number = 0;
 }
 

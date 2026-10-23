@@ -13,17 +13,19 @@ export type ModelKey =
   | 'sword_shield_gold'
   | 'barrier_column';
 
+const ASSET_VERSION = '1.1.0';
+
 const MODEL_PATHS: Record<ModelKey, string> = {
-  knight: '/assets/models/knight.glb',
-  barbarian: '/assets/models/barbarian.glb',
-  floor_tile_large: '/assets/models/floor_tile_large.glb',
-  floor_tile_small_decorated: '/assets/models/floor_tile_small_decorated.glb',
-  floor_foundation_allsides: '/assets/models/floor_foundation_allsides.glb',
-  pillar_decorated: '/assets/models/pillar_decorated.glb',
-  column: '/assets/models/column.glb',
-  torch_lit: '/assets/models/torch_lit.glb',
-  sword_shield_gold: '/assets/models/sword_shield_gold.glb',
-  barrier_column: '/assets/models/barrier_column.glb',
+  knight: `/assets/models/knight.glb?v=${ASSET_VERSION}`,
+  barbarian: `/assets/models/barbarian.glb?v=${ASSET_VERSION}`,
+  floor_tile_large: `/assets/models/floor_tile_large.glb?v=${ASSET_VERSION}`,
+  floor_tile_small_decorated: `/assets/models/floor_tile_small_decorated.glb?v=${ASSET_VERSION}`,
+  floor_foundation_allsides: `/assets/models/floor_foundation_allsides.glb?v=${ASSET_VERSION}`,
+  pillar_decorated: `/assets/models/pillar_decorated.glb?v=${ASSET_VERSION}`,
+  column: `/assets/models/column.glb?v=${ASSET_VERSION}`,
+  torch_lit: `/assets/models/torch_lit.glb?v=${ASSET_VERSION}`,
+  sword_shield_gold: `/assets/models/sword_shield_gold.glb?v=${ASSET_VERSION}`,
+  barrier_column: `/assets/models/barrier_column.glb?v=${ASSET_VERSION}`,
 };
 
 export class AssetLoader {
@@ -44,14 +46,17 @@ export class AssetLoader {
     const total = keys.length;
     let loaded = 0;
 
-    for (const key of keys) {
-      const url = MODEL_PATHS[key];
-      onProgress?.(loaded, total, Math.round((loaded / total) * 100), `Đang tải ${key}.glb...`);
-      const gltf = await this.loadSingleWithRetry(url, 2);
-      this.cache.set(key, gltf);
-      loaded++;
-      onProgress?.(loaded, total, Math.round((loaded / total) * 100), `Đã tải ${key}.glb`);
-    }
+    onProgress?.(0, total, 0, 'Đang tải đồng thời 10 model 3D...');
+
+    await Promise.all(
+      keys.map(async (key) => {
+        const url = MODEL_PATHS[key];
+        const gltf = await this.loadSingleWithRetry(url, 2);
+        this.cache.set(key, gltf);
+        loaded++;
+        onProgress?.(loaded, total, Math.round((loaded / total) * 100), `Đã tải ${key}.glb`);
+      })
+    );
 
     this.extractRiftBladeTemplate();
     this.isLoaded = true;

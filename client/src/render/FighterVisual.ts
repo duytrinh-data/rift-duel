@@ -16,6 +16,7 @@ export interface FighterRenderInput {
   grounded: boolean;
   state: string;
   activeAttackId: string;
+  attackInstanceId?: number;
   hasWeapon: boolean;
   invulnerableTicks: number;
   damage: number;
@@ -661,6 +662,7 @@ export class FighterVisual {
       case 'attack_startup':
       case 'attack_active':
       case 'attack_recovery': {
+        const instId = Number(state.attackInstanceId ?? 0);
         const isNewAttack =
           !wasAttackState ||
           state.activeAttackId !== this.prevAttackId ||
@@ -671,13 +673,23 @@ export class FighterVisual {
           : undefined;
 
         if (isNewAttack || !this.activeAttackClip) {
-          this.comboStep = (this.comboStep + 1) % 3;
+          this.comboStep = instId > 0 ? instId % 3 : (this.comboStep + 1) % 3;
           this.activeAttackClip = this.selectAttackAnimationClip(state, cfg?.animClip);
           this.squashScale.set(1.12, 0.9, 1.12);
-          const speed = cfg?.isHeavy ? 1.45 : 1.85;
+          const action = this.actions.get(this.activeAttackClip);
+          const clipDur = action?.getClip()?.duration || 0.85;
+          const totalDurationSec = cfg
+            ? (cfg.startupTicks + cfg.activeTicks + cfg.recoveryTicks) / 60
+            : 0.45;
+          const speed = THREE.MathUtils.clamp(clipDur / Math.max(0.2, totalDurationSec), 1.15, 2.35);
           this.playAnimation(this.activeAttackClip, false, speed, true, 0.05);
         } else {
-          const speed = cfg?.isHeavy ? 1.45 : 1.85;
+          const action = this.actions.get(this.activeAttackClip);
+          const clipDur = action?.getClip()?.duration || 0.85;
+          const totalDurationSec = cfg
+            ? (cfg.startupTicks + cfg.activeTicks + cfg.recoveryTicks) / 60
+            : 0.45;
+          const speed = THREE.MathUtils.clamp(clipDur / Math.max(0.2, totalDurationSec), 1.15, 2.35);
           this.playAnimation(this.activeAttackClip, false, speed, false, 0.05);
         }
         break;

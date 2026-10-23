@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import colyseusPkg from 'colyseus';
 import type { Client, Room as RoomType } from 'colyseus';
 const { Room, ServerError } = colyseusPkg;
@@ -5,6 +6,7 @@ import {
   CharacterArchetype,
   FighterSimState,
   InputFrame,
+  MatchPhase,
   SIM_CONFIG,
   SimulationWorld,
   createInitialFighterState,
@@ -36,6 +38,23 @@ interface ClientRateMeta {
 
 // Active room code directory in RAM
 export const activeRoomsByCode = new Map<string, RiftRoom>();
+export const MAX_ACTIVE_ROOMS = 100;
+const IDLE_LOBBY_TIMEOUT_TICKS = 10 * 60 * SIM_CONFIG.TICK_RATE; // 10 minutes
+
+const tickLagSamples: number[] = [];
+export function recordTickLagMs(lagMs: number): void {
+  tickLagSamples.push(Math.max(0, lagMs));
+  if (tickLagSamples.length > 300) {
+    tickLagSamples.shift();
+  }
+}
+
+export function getServerTickLagP95Ms(): number {
+  if (tickLagSamples.length === 0) return 0;
+  const sorted = [...tickLagSamples].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
+  return Number(sorted[idx].toFixed(2));
+}
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -59,14 +78,25 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
   private consumedSeq = new Map<string, number>();
   private clientMeta = new Map<string, ClientRateMeta>();
   private tokenToSessionId = new Map<string, string>();
+  private phaseBeforePause: MatchPhase = 'fighting';
+  private idleLobbyTicks = 0;
+  private lastSimTimeMs = Date.now();
   public roomCode: string = '';
 
   onCreate(options: RoomJoinOptions): void {
+    if (activeRoomsByCode.size >= MAX_ACTIVE_ROOMS) {
+      throw new ServerError(4002, 'SERVER_FULL: Máy chủ đã đạt giới hạn số phòng tối đa.');
+    }
+
     this.setState(new RiftRoomState());
     this.world = createSimulationWorld();
+    this.lastSimTimeMs = Date.now();
 
-    // Generate or use requested room code
-    const requested = options.roomCode?.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    // In production, always generate room code on server to prevent code squatting (P2-2)
+    const allowCustomCode = process.env.NODE_ENV !== 'production';
+    const requested = allowCustomCode
+      ? options.roomCode?.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+      : '';
     if (requested && requested.length >= 4 && requested.length <= 8 && !activeRoomsByCode.has(requested)) {
       this.roomCode = requested;
     } else {
@@ -187,7 +217,9 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
   }
 
   onJoin(client: Client, options: RoomJoinOptions): void {
-    const token = (options?.playerToken ?? '').trim() || `tok_${client.sessionId}`;
+    const rawToken = (options?.playerToken ?? '').trim();
+    const token = rawToken.length >= 12 ? rawToken : crypto.randomUUID();
+    client.send('assigned_token', { playerToken: token });
 
     // Check if this join is reclaiming a disconnected slot via playerToken
     if (this.tokenToSessionId.has(token)) {
@@ -217,7 +249,7 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
         });
 
         if (this.world.phase === 'paused_disconnect') {
-          this.world.phase = 'fighting';
+          this.world.phase = this.phaseBeforePause;
           this.world.disconnectGraceTicks = 0;
           this.world.disconnectedSlot = 0;
         }
@@ -283,6 +315,7 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
       this.world.phase === 'countdown';
 
     if (wasInMatch) {
+      this.phaseBeforePause = this.world.phase;
       this.world.phase = 'paused_disconnect';
       this.world.disconnectGraceTicks = SIM_CONFIG.DISCONNECT_GRACE_TICKS;
       this.world.disconnectedSlot = fighter.slot;
@@ -298,7 +331,7 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
         currentFighter.connected = true;
         currentNet.connected = true;
         if (this.world.phase === 'paused_disconnect') {
-          this.world.phase = 'fighting';
+          this.world.phase = this.phaseBeforePause;
           this.world.disconnectGraceTicks = 0;
           this.world.disconnectedSlot = 0;
         }
@@ -418,9 +451,27 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
   }
 
   private updateSimulation(): void {
+    const nowMs = Date.now();
+    const expectedMs = 1000 / SIM_CONFIG.TICK_RATE;
+    const lagMs = Math.max(0, nowMs - this.lastSimTimeMs - expectedMs);
+    this.lastSimTimeMs = nowMs;
+    recordTickLagMs(lagMs);
+
+    // Auto-dispose idle waiting/lobby rooms after 10 minutes (P2-2)
+    if (this.world.phase === 'waiting' || this.world.phase === 'lobby') {
+      this.idleLobbyTicks++;
+      if (this.idleLobbyTicks > IDLE_LOBBY_TIMEOUT_TICKS) {
+        void this.disconnect();
+        return;
+      }
+    } else {
+      this.idleLobbyTicks = 0;
+    }
+
     // Neutralize stale inputs if a client hasn't sent an update in >15 ticks (250ms)
     for (const [sessionId, meta] of this.clientMeta.entries()) {
-      if (this.world.tick - meta.lastInputTick > 15) {
+      const silentTicks = this.world.tick - meta.lastInputTick;
+      if (silentTicks > 15) {
         const last = this.latestInputs.get(sessionId);
         if (last) {
           this.latestInputs.set(sessionId, {
@@ -483,16 +534,23 @@ export class RiftRoom extends (Room as typeof RoomType<RiftRoomState>) {
       netF.groundJumpsLeft = simF.groundJumpsLeft;
       netF.airJumpsLeft = simF.airJumpsLeft;
       netF.airRecoveriesLeft = simF.airRecoveriesLeft;
+      netF.coyoteTicks = simF.coyoteTicks;
+      netF.jumpBufferTicks = simF.jumpBufferTicks;
 
       netF.stocks = simF.stocks;
       netF.damage = simF.damage;
       netF.state = simF.state;
       netF.stateTicks = simF.stateTicks;
       netF.activeAttackId = simF.activeAttackId;
+      netF.attackInstanceId = simF.attackInstanceId;
       netF.attackCooldownTicks = simF.attackCooldownTicks;
       netF.dodgeCooldownTicks = simF.dodgeCooldownTicks;
+      netF.dodgeDirX = simF.dodgeDirX;
+      netF.dodgeDirZ = simF.dodgeDirZ;
+      netF.hitstopTicks = simF.hitstopTicks;
       netF.invulnerableTicks = simF.invulnerableTicks;
       netF.hasWeapon = simF.hasWeapon;
+      netF.weaponDurability = simF.weaponDurability;
       netF.lastProcessedInputSeq = simF.lastProcessedInputSeq;
     }
 

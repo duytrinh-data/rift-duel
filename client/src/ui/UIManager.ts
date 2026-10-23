@@ -39,6 +39,7 @@ export class UIManager {
 
   private lastSummary: RoomViewSummary | null = null;
   private isLocalPractice = false;
+  private lastRenderSig = '';
 
   constructor(
     root: HTMLElement,
@@ -79,6 +80,10 @@ export class UIManager {
     return this.selectedArchetype;
   }
 
+  public isOptionsOpen(): boolean {
+    return this.optionsOpen;
+  }
+
   public isMenuBlockingGameplay(): boolean {
     return (
       this.optionsOpen ||
@@ -92,11 +97,27 @@ export class UIManager {
   public showBanner(msg: string, type: 'info' | 'error' | 'warn' = 'info'): void {
     this.bannerMessage = msg;
     this.bannerType = type;
+    const alertEl = document.getElementById('status-alert');
+    if (alertEl) {
+      alertEl.className = `status-banner ${type}`;
+      alertEl.style.display = msg ? '' : 'none';
+      const span = alertEl.querySelector('span');
+      if (span) {
+        span.textContent = msg;
+      } else {
+        alertEl.textContent = msg;
+      }
+      return;
+    }
     this.renderCurrentScreen();
   }
 
   public clearBanner(): void {
     this.bannerMessage = '';
+    const alertEl = document.getElementById('status-alert');
+    if (alertEl) {
+      alertEl.style.display = 'none';
+    }
   }
 
   public showWebGLError(): void {
@@ -147,6 +168,7 @@ export class UIManager {
     this.currentScreen = 'home';
     this.isLocalPractice = false;
     this.lastSummary = null;
+    this.lastRenderSig = '';
     this.renderCurrentScreen();
   }
 
@@ -163,10 +185,33 @@ export class UIManager {
 
     if (this.currentScreen !== targetScreen) {
       this.currentScreen = targetScreen;
+      this.lastRenderSig = '';
       this.clearBanner();
       this.renderCurrentScreen();
     } else if (this.currentScreen === 'lobby' || this.currentScreen === 'result') {
-      this.renderCurrentScreen();
+      const sig = JSON.stringify({
+        roomCode: summary.roomCode,
+        phase: summary.phase,
+        winnerSlot: summary.winnerSlot,
+        winReason: summary.winReason,
+        optionsOpen: this.optionsOpen,
+        bannerMessage: this.bannerMessage,
+        bannerType: this.bannerType,
+        fighters: summary.fighters.map((f) => ({
+          slot: f.slot,
+          nickname: f.nickname,
+          archetype: f.archetype,
+          ready: f.ready,
+          rematchVote: f.rematchVote,
+          connected: f.connected,
+          stocks: f.stocks,
+          damage: f.damage,
+        })),
+      });
+      if (sig !== this.lastRenderSig) {
+        this.lastRenderSig = sig;
+        this.renderCurrentScreen();
+      }
     } else if (this.currentScreen === 'hud') {
       this.updateHUDValuesOnly(summary);
     }
@@ -193,7 +238,7 @@ export class UIManager {
       if (this.isLocalPractice) {
         pingEl.textContent = '0 ms (Local)';
       } else if (pingMs > 0) {
-        const quality = pingMs < 65 ? 'Tốt' : pingMs < 140 ? 'TB' : 'Trễ';
+        const quality = pingMs < 65 ? 'Tốt' : pingMs <= 150 ? 'TB' : 'Ping cao';
         pingEl.textContent = `${pingMs} ms (${quality})`;
       } else {
         pingEl.textContent = '-- ms';
@@ -408,13 +453,14 @@ export class UIManager {
               </p>
             </div>
 
-            ${
-              this.bannerMessage
-                ? `<div id="status-alert" class="status-banner ${this.bannerType}" role="alert">
-                    <span>${this.bannerMessage}</span>
-                  </div>`
-                : ''
-            }
+            <div
+              id="status-alert"
+              class="status-banner ${this.bannerType}"
+              role="alert"
+              style="${this.bannerMessage ? '' : 'display: none;'}"
+            >
+              <span>${this.bannerMessage}</span>
+            </div>
 
             <div class="form-row">
               <div class="field-group">
@@ -555,13 +601,14 @@ export class UIManager {
               </p>
             </div>
 
-            ${
-              this.bannerMessage
-                ? `<div id="status-alert" class="status-banner ${this.bannerType}" role="alert">
-                    <span>${this.bannerMessage}</span>
-                  </div>`
-                : ''
-            }
+            <div
+              id="status-alert"
+              class="status-banner ${this.bannerType}"
+              role="alert"
+              style="${this.bannerMessage ? '' : 'display: none;'}"
+            >
+              <span>${this.bannerMessage}</span>
+            </div>
 
             <div class="invite-box">
               <div>

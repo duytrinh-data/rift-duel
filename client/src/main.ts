@@ -41,6 +41,10 @@ class RiftDuelGameApp {
   private localLastEventId = 0;
 
   private lastFrameTime = performance.now();
+  private fixedAccumulatorMs = 0;
+  private lastFixedTimeMs = performance.now();
+  private readonly STEP_MS = 1000 / SIM_CONFIG.TICK_RATE;
+  private readonly MAX_STEPS_PER_FRAME = 5;
 
   constructor() {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -81,21 +85,33 @@ class RiftDuelGameApp {
       }
     );
 
-    // Expose debug/test bridge on window for automated Playwright E2E inspection & latency tests
-    (window as unknown as Record<string, unknown>).__RIFT_DUEL__ = {
-      app: this,
-      net: this.net,
-      setSimulatedLatencyMs: (ms: number) => {
-        this.net.simulatedLatencyMs = ms;
-      },
-      forceDisconnectAndReconnect: () =>
-        this.net.forceReconnectCurrentRoom(
-          this.ui.getNickname(),
-          this.ui.getSelectedArchetype()
-        ),
-      getRoomSummary: () =>
-        this.isLocalPractice ? this.buildLocalSummary() : this.net.getRoomSummary(),
-    };
+    // Expose debug/test bridge only in DEV or automated E2E mode (?e2e=1)
+    if (
+      import.meta.env.DEV ||
+      new URLSearchParams(window.location.search).get('e2e') === '1'
+    ) {
+      (window as unknown as Record<string, unknown>).__RIFT_DUEL__ = {
+        app: this,
+        net: this.net,
+        setSimulatedLatencyMs: (ms: number) => {
+          this.net.simulatedLatencyMs = ms;
+        },
+        forceDisconnectAndReconnect: () =>
+          this.net.forceReconnectCurrentRoom(
+            this.ui.getNickname(),
+            this.ui.getSelectedArchetype()
+          ),
+        getRoomSummary: () =>
+          this.isLocalPractice ? this.buildLocalSummary() : this.net.getRoomSummary(),
+      };
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        this.lastFixedTimeMs = performance.now();
+        this.fixedAccumulatorMs = 0;
+      }
+    });
 
     void this.bootstrap();
   }
@@ -129,8 +145,10 @@ class RiftDuelGameApp {
     this.fighterVisuals.set(2, f2);
 
     this.ui.showHomeScreen();
-    this.lastFrameTime = performance.now();
-    window.setInterval(() => this.fixedUpdateStep(), Math.round(1000 / SIM_CONFIG.TICK_RATE));
+    const now = performance.now();
+    this.lastFrameTime = now;
+    this.lastFixedTimeMs = now;
+    this.fixedAccumulatorMs = 0;
     requestAnimationFrame((t) => this.animate(t));
   }
 
@@ -363,7 +381,27 @@ class RiftDuelGameApp {
     }
   }
 
+  private runFixedSteps(now: number): void {
+    const frameDeltaMs = Math.min(250, Math.max(0, now - this.lastFixedTimeMs));
+    this.lastFixedTimeMs = now;
+    this.fixedAccumulatorMs += frameDeltaMs;
+
+    let steps = 0;
+    while (this.fixedAccumulatorMs >= this.STEP_MS && steps < this.MAX_STEPS_PER_FRAME) {
+      this.fixedUpdateStep();
+      this.fixedAccumulatorMs -= this.STEP_MS;
+      steps++;
+    }
+    if (steps === this.MAX_STEPS_PER_FRAME) {
+      this.fixedAccumulatorMs = 0;
+    }
+  }
+
   private fixedUpdateStep(): void {
+    if (this.isLocalPractice && this.localWorld && this.ui.isOptionsOpen()) {
+      return;
+    }
+
     const input = this.kb.sampleGameplayInput(this.ui.isMenuBlockingGameplay());
 
     if (this.isLocalPractice && this.localWorld) {
@@ -390,6 +428,7 @@ class RiftDuelGameApp {
   }
 
   private animate(now: number): void {
+    this.runFixedSteps(now);
     const dt = Math.min(0.1, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
     const elapsedSec = now / 1000;
@@ -416,6 +455,7 @@ class RiftDuelGameApp {
         grounded: f.grounded,
         state: f.state,
         activeAttackId: f.activeAttackId,
+        attackInstanceId: f.attackInstanceId,
         hasWeapon: f.hasWeapon,
         invulnerableTicks: f.invulnerableTicks,
         damage: f.damage,
@@ -448,6 +488,7 @@ class RiftDuelGameApp {
         grounded: true,
         state: 'idle',
         activeAttackId: '',
+        attackInstanceId: 0,
         hasWeapon: true,
         invulnerableTicks: 0,
         damage: 0,
@@ -465,6 +506,7 @@ class RiftDuelGameApp {
         grounded: true,
         state: 'idle',
         activeAttackId: '',
+        attackInstanceId: 0,
         hasWeapon: false,
         invulnerableTicks: 0,
         damage: 0,

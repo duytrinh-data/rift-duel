@@ -43,18 +43,18 @@
 ### Cài đặt và chạy
 ```bash
 # 1. Di chuyển vào thư mục dự án
-cd "d:/Duy AI OS/rift-duel"
+cd rift-duel
 
 # 2. Cài đặt dependencies
 npm install
 
-# 3. Chạy đồng thời Server (cổng 2567) và Client (cổng 5173)
+# 3. Chạy đồng thời Server (cổng 2567) và Client (cổng 5174)
 npm run dev
 ```
-- Mở trình duyệt tại `http://localhost:5173`.
+- Mở trình duyệt tại `http://localhost:5174`.
 - Để thử nghiệm 2 người chơi trên cùng máy:
-  1. Mở cửa sổ 1 tại `http://localhost:5173`, bấm `Enter` vào **Tạo Phòng Đấu Mới**.
-  2. Bấm phím `C` để copy link mời (dạng `http://localhost:5173/?room=ABC123`).
+  1. Mở cửa sổ 1 tại `http://localhost:5174`, bấm `Enter` vào **Tạo Phòng Đấu Mới**.
+  2. Bấm phím `C` để copy link mời (dạng `http://localhost:5174/?room=ABC123`).
   3. Mở cửa sổ 2 (hoặc tab Ẩn danh) dán link đó vào, bấm `Enter` để vào phòng.
   4. Cả hai bấm phím `R` (hoặc `Enter` vào nút **SẴN SÀNG**) để đếm ngược và chiến đấu!
 

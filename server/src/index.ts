@@ -3,7 +3,11 @@ import express from 'express';
 import cors from 'cors';
 import colyseusPkg from 'colyseus';
 import wsTransportPkg from '@colyseus/ws-transport';
-import { RiftRoom, activeRoomsByCode } from './rooms/RiftRoom.js';
+import {
+  RiftRoom,
+  activeRoomsByCode,
+  getServerTickLagP95Ms,
+} from './rooms/RiftRoom.js';
 
 const { Server } = colyseusPkg;
 const { WebSocketTransport } = wsTransportPkg;
@@ -22,20 +26,40 @@ const defaultOrigins = [
 
 const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
-  .map((o) => o.trim())
+  .map((o) => o.trim().replace(/\/+$/, ''))
   .filter(Boolean);
 
 const allowedOrigins = new Set([...defaultOrigins, ...configuredOrigins]);
 
-function isOriginAllowed(origin: string | undefined): boolean {
+// Pre-compile strict Netlify deploy-preview regexes ONLY for explicitly configured Netlify site names
+const netlifyPreviewPatterns: RegExp[] = [];
+for (const orig of configuredOrigins) {
+  const m = /^https:\/\/([a-z0-9-]+)\.netlify\.app$/i.exec(orig);
+  if (m) {
+    const siteSlug = m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    netlifyPreviewPatterns.push(
+      new RegExp(`^https:\\/\\/(deploy-preview-\\d+--)??${siteSlug}\\.netlify\\.app$`, 'i')
+    );
+  }
+}
+
+export function isOriginAllowed(
+  origin: string | undefined,
+  customAllowed?: Set<string>
+): boolean {
   if (!origin) return true; // Same-origin or server health check
-  if (allowedOrigins.has(origin)) return true;
-  if (NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+  const normalized = origin.trim().replace(/\/+$/, '');
+  const activeSet = customAllowed ?? allowedOrigins;
+  if (activeSet.has(normalized)) return true;
+  if (
+    !customAllowed &&
+    NODE_ENV !== 'production' &&
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)
+  ) {
     return true;
   }
-  // Allow configured Netlify subdomain previews if any *.netlify.app is in ALLOWED_ORIGINS
-  for (const allowed of allowedOrigins) {
-    if (allowed.endsWith('.netlify.app') && origin.endsWith('.netlify.app')) {
+  for (const re of netlifyPreviewPatterns) {
+    if (re.test(normalized)) {
       return true;
     }
   }
@@ -43,13 +67,28 @@ function isOriginAllowed(origin: string | undefined): boolean {
 }
 
 const app = express();
+
+// Strict Origin Enforcement Middleware: returns 403 Forbidden (never 500 stack trace) on disallowed Origin
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && !isOriginAllowed(origin)) {
+    res.status(403).json({
+      ok: false,
+      error: 'FORBIDDEN_ORIGIN',
+      message: 'Origin is not permitted.',
+    });
+    return;
+  }
+  next();
+});
+
 app.use(
   cors({
     origin: (origin, callback) => {
       if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`Origin ${origin} not allowed by CORS`));
+        callback(null, false);
       }
     },
     credentials: true,
@@ -57,19 +96,47 @@ app.use(
 );
 app.use(express.json());
 
-// Health Endpoint for Render & Frontend Cold-Start Wakeup Probe
+// Lightweight IP Rate Limiter for HTTP API endpoints (P2-2)
+const apiRateMap = new Map<string, { windowStartMs: number; count: number }>();
+function checkApiRateLimit(ip: string, maxPer10Sec = 30): boolean {
+  const now = Date.now();
+  const entry = apiRateMap.get(ip);
+  if (!entry || now - entry.windowStartMs > 10_000) {
+    apiRateMap.set(ip, { windowStartMs: now, count: 1 });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= maxPer10Sec;
+}
+
+// Health Endpoint for Render & Frontend Cold-Start Wakeup Probe (includes tickLagMsP95, rooms, uptime - P0-3)
 app.get('/health', (_req, res) => {
+  const uptime = Math.round(process.uptime());
+  const rooms = activeRoomsByCode.size;
   res.status(200).json({
     status: 'ok',
     service: 'rift-duel-server',
-    uptimeSeconds: Math.round(process.uptime()),
-    activeRooms: activeRoomsByCode.size,
+    uptime,
+    uptimeSeconds: uptime,
+    rooms,
+    activeRooms: rooms,
+    tickLagMsP95: getServerTickLagP95Ms(),
     timestamp: Date.now(),
   });
 });
 
 // Room Lookup Endpoint by 6-Character Room Code
 app.get('/api/rooms/:code', (req, res) => {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!checkApiRateLimit(ip, 30)) {
+    res.status(429).json({
+      ok: false,
+      error: 'RATE_LIMITED',
+      message: 'Quá nhiều yêu cầu tra cứu phòng. Vui lòng thử lại sau ít giây.',
+    });
+    return;
+  }
+
   const code = (req.params.code || '').trim().toUpperCase();
   const playerToken = typeof req.query.token === 'string' ? req.query.token : undefined;
 
@@ -116,7 +183,7 @@ const httpServer = http.createServer(app);
 const gameServer = new Server({
   transport: new WebSocketTransport({
     server: httpServer,
-    pingInterval: 5000,
+    pingInterval: 2000,
     pingMaxRetries: 3,
     verifyClient: (info, next) => {
       const origin = info.origin || (info.req.headers.origin as string | undefined);
@@ -131,6 +198,8 @@ const gameServer = new Server({
 
 gameServer.define('rift_room', RiftRoom);
 
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`[RIFT DUEL SERVER] Listening on ws://0.0.0.0:${PORT} (env: ${NODE_ENV})`);
-});
+if (process.env.VITEST !== 'true') {
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`[RIFT DUEL SERVER] Listening on ws://0.0.0.0:${PORT} (env: ${NODE_ENV})`);
+  });
+}

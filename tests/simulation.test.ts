@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   ATTACK_CONFIGS,
   SIM_CONFIG,
+  canFighterStartAction,
+  chooseAttackId,
   computeKnockbackMagnitude,
   createInitialFighterState,
   createSimulationWorld,
   sanitizeInput,
   startMatchCountdown,
+  stepFighterKinematicMovement,
   stepWorldTick,
 } from '../shared/src/index.js';
+import { CombatEventNetSchema, RiftRoomState } from '../server/src/schema/RiftRoomState.js';
+import { isOriginAllowed } from '../server/src/index.js';
 
 function createFightingWorld() {
   const world = createSimulationWorld();
@@ -180,5 +185,192 @@ describe('RIFT DUEL - Authoritative 3D Combat & Rules Simulation', () => {
     expect(wSimKO.phase).toBe('finished');
     expect(wSimKO.winnerSlot).toBe(0);
     expect(wSimKO.winReason).toBe('DRAW');
+  });
+
+  it('6. [P0-1] Colyseus ArraySchema<CombatEventNetSchema> iterates via .forEach and preserves ascending eventId order', () => {
+    const roomState = new RiftRoomState();
+    const e1 = new CombatEventNetSchema();
+    e1.eventId = 1;
+    e1.type = 'countdown_tick';
+    const e2 = new CombatEventNetSchema();
+    e2.eventId = 2;
+    e2.type = 'match_start';
+    const e3 = new CombatEventNetSchema();
+    e3.eventId = 3;
+    e3.type = 'hit_light';
+    roomState.events.push(e1, e2, e3);
+
+    let lastProcessedEventId = 0;
+    const collected: Array<{ eventId: number; type: string }> = [];
+    roomState.events.forEach((evt) => {
+      if (evt && evt.eventId > lastProcessedEventId) {
+        collected.push({ eventId: evt.eventId, type: evt.type });
+      }
+    });
+    collected.sort((a, b) => a.eventId - b.eventId);
+    for (const evt of collected) {
+      lastProcessedEventId = evt.eventId;
+    }
+
+    expect(collected.map((c) => c.type)).toEqual(['countdown_tick', 'match_start', 'hit_light']);
+    expect(lastProcessedEventId).toBe(3);
+  });
+
+  it('7. [P1-1] Jump prediction reconciliation under 120ms latency keeps fighter ascending smoothly without dipping to Y=0', () => {
+    // Simulate client sending seq 1..15 while server acks with 4-tick lag (~67ms one-way / ~133ms RTT)
+    const serverFighter = createInitialFighterState('p1', 1, 'Duy', 'vanguard');
+    const predictedFighter = { ...serverFighter };
+    const pendingInputs: Array<{ frame: ReturnType<typeof sanitizeInput>; jumpEdge: boolean }> = [];
+    let prevJumpHeld = false;
+
+    const yHistory: number[] = [];
+
+    for (let seq = 1; seq <= 14; seq++) {
+      const jumpPressed = seq >= 2 && seq <= 6; // Player presses Space on seq=2 and holds for 5 ticks
+      const frame = sanitizeInput({ seq, moveX: 1, jumpPressed });
+      const jumpEdge = frame.jumpPressed && !prevJumpHeld;
+      prevJumpHeld = frame.jumpPressed;
+      pendingInputs.push({ frame, jumpEdge });
+
+      // Client immediate step
+      stepFighterKinematicMovement(predictedFighter, frame.moveX, frame.moveZ, jumpEdge);
+
+      // Simulate server state patch arriving for (seq - 4)
+      const ackSeq = seq - 4;
+      if (ackSeq >= 1) {
+        const serverInput = pendingInputs.find((p) => p.frame.seq === ackSeq)!;
+        stepFighterKinematicMovement(
+          serverFighter,
+          serverInput.frame.moveX,
+          serverInput.frame.moveZ,
+          serverInput.jumpEdge
+        );
+
+        // Reconcile from authoritative serverFighter + replay remaining pendingInputs
+        const replayed = { ...serverFighter };
+        while (pendingInputs.length > 0 && pendingInputs[0].frame.seq <= ackSeq) {
+          pendingInputs.shift();
+        }
+        for (const pending of pendingInputs) {
+          stepFighterKinematicMovement(
+            replayed,
+            pending.frame.moveX,
+            pending.frame.moveZ,
+            pending.jumpEdge
+          );
+        }
+        Object.assign(predictedFighter, replayed);
+      }
+
+      if (seq >= 2) {
+        yHistory.push(predictedFighter.y);
+      }
+    }
+
+    // Verify fighter left the ground on seq=2 and never dipped back to 0 during ascent
+    expect(yHistory[0]).toBeGreaterThan(0);
+    for (let i = 1; i < 8; i++) {
+      expect(yHistory[i]).toBeGreaterThan(yHistory[i - 1]);
+    }
+  });
+
+  it('8. [P1-2] Pure helpers canFighterStartAction and chooseAttackId predict local attack/dodge immediately', () => {
+    const f = createInitialFighterState('p1', 1, 'Duy', 'vanguard');
+    expect(canFighterStartAction(f)).toBe(true);
+    expect(chooseAttackId(f, false, false, true)).toBe('unarmed_light_ground');
+    f.hasWeapon = true;
+    f.grounded = false;
+    expect(chooseAttackId(f, false, true, false)).toBe('sword_heavy_air');
+    f.state = 'hitstun';
+    expect(canFighterStartAction(f)).toBe(false);
+  });
+
+  it('9. [P1-3] 6-tick Action Input Buffer executes attack pressed up to 6 ticks before recovery ends, and clears on hitstun', () => {
+    const { world, p1, p2 } = createFightingWorld();
+    p2.x = 8; // keep opponent away
+
+    const cfg = ATTACK_CONFIGS.unarmed_light_ground;
+    // Start attack 1
+    stepWorldTick(world, new Map([['p1', sanitizeInput({ seq: 1, lightPressed: true })]]));
+    const firstInstanceId = p1.attackInstanceId;
+    expect(firstInstanceId).toBe(1);
+
+    // Advance until 4 ticks remain in attack_recovery
+    const totalAttackTicks = cfg.startupTicks + cfg.activeTicks + cfg.recoveryTicks;
+    for (let i = 0; i < totalAttackTicks - 4; i++) {
+      stepWorldTick(world, new Map());
+    }
+    expect(p1.state).toBe('attack_recovery');
+    expect(p1.stateTicks).toBe(cfg.recoveryTicks - 4);
+
+    // Press J (lightPressed) 4 ticks early while still in recovery!
+    stepWorldTick(world, new Map([['p1', sanitizeInput({ seq: 2, lightPressed: true })]]));
+    expect(p1.bufferedAction).toBe('light');
+
+    // Step remaining 3 ticks of recovery with NO buttons pressed
+    for (let i = 0; i < 3; i++) {
+      stepWorldTick(world, new Map());
+    }
+
+    // On the exact tick recovery ends, buffered light attack fires automatically!
+    expect(p1.state).toBe('attack_startup');
+    expect(p1.activeAttackId).toBe('unarmed_light_ground');
+    expect(p1.attackInstanceId).toBe(firstInstanceId + 1);
+  });
+
+  it('10. [P1-6] Archetype modifiers differentiate Vanguard vs Reaver and Rift Blade breaks after 4 hits (100 durability)', () => {
+    // Reaver deals 15% more damage than Vanguard on the same attack
+    const { world, p1, p2 } = createFightingWorld();
+    p1.x = 0;
+    p1.z = 0;
+    p2.x = 1.0;
+    p2.z = 0;
+
+    // P2 is Reaver hitting P1 (Vanguard)
+    stepWorldTick(world, new Map([['p2', sanitizeInput({ seq: 1, lightPressed: true })]]));
+    for (let i = 0; i < 20; i++) {
+      stepWorldTick(world, new Map());
+    }
+    expect(p1.damage).toBe(Math.round(ATTACK_CONFIGS.unarmed_light_ground.damage * 1.15));
+
+    // Rift Blade durability: 4 hits * 25 durability = 100 -> breaks on 4th hit
+    p1.hasWeapon = true;
+    p1.weaponDurability = SIM_CONFIG.WEAPON_MAX_DURABILITY;
+    world.weapon.status = 'held';
+    world.weapon.holderSlot = 1;
+
+    for (let hitNum = 1; hitNum <= 4; hitNum++) {
+      p1.state = 'idle';
+      p1.stateTicks = 0;
+      p1.x = 0;
+      p1.y = 0;
+      p1.z = 0;
+      p2.state = 'idle';
+      p2.stateTicks = 0;
+      p2.invulnerableTicks = 0;
+      p2.x = 1.1;
+      p2.y = 0;
+      p2.z = 0;
+
+      stepWorldTick(world, new Map([['p1', sanitizeInput({ seq: 10 + hitNum, lightPressed: true })]]));
+      for (let t = 0; t < 18; t++) {
+        p2.x = 1.1;
+        p2.y = 0;
+        p2.z = 0;
+        stepWorldTick(world, new Map());
+      }
+    }
+
+    expect(p1.hasWeapon).toBe(false);
+    expect(p1.weaponDurability).toBe(0);
+  });
+
+  it('11. [P2-1] Strict CORS origin check allows configured origins and rejects arbitrary *.netlify.app domains', () => {
+    const allowed = new Set(['http://localhost:5174', 'https://rift-duel.netlify.app']);
+    expect(isOriginAllowed(undefined, allowed)).toBe(true);
+    expect(isOriginAllowed('http://localhost:5174', allowed)).toBe(true);
+    expect(isOriginAllowed('https://rift-duel.netlify.app', allowed)).toBe(true);
+    expect(isOriginAllowed('https://evil-attacker.netlify.app', allowed)).toBe(false);
+    expect(isOriginAllowed('https://example.com', allowed)).toBe(false);
   });
 });

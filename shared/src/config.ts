@@ -65,6 +65,21 @@ export const SIM_CONFIG = {
   MAX_AIR_RECOVERIES: 1,
   COYOTE_TICKS: 6,
   JUMP_BUFFER_TICKS: 6,
+  ACTION_BUFFER_TICKS: 6,
+
+  // Character Archetype Stats (Vanguard = Heavy Armor Tank, Reaver = High-Speed Berserker)
+  ARCHETYPE_MODIFIERS: {
+    vanguard: {
+      speedMult: 1.0,
+      attackDamageMult: 1.0,
+      knockbackReceivedMult: 0.94,
+    },
+    reaver: {
+      speedMult: 1.06,
+      attackDamageMult: 1.15,
+      knockbackReceivedMult: 1.06,
+    },
+  },
 
   // Dodge Rules
   DODGE_DURATION_TICKS: 18,
@@ -79,7 +94,16 @@ export const SIM_CONFIG = {
 
   // Weapon Pickup & Throw Rules
   WEAPON_SPAWN_POS: { x: 0, y: 1.4, z: 0 },
-  WEAPON_PICKUP_RADIUS: 2.25,
+  WEAPON_SPAWN_PADS: [
+    { x: 0, z: 0 },
+    { x: -4.2, z: -2.4 },
+    { x: 4.2, z: 2.4 },
+    { x: 4.2, z: -2.4 },
+    { x: -4.2, z: 2.4 },
+    { x: 0, z: -3.0 },
+    { x: 0, z: 3.0 },
+  ],
+  WEAPON_PICKUP_RADIUS: 2.45,
   WEAPON_PICKUP_TICKS: 6,
   WEAPON_THROW_TICKS: 12,
   WEAPON_THROW_SPEED_XZ: 22.0,
@@ -92,8 +116,9 @@ export const SIM_CONFIG = {
   WEAPON_THROW_HITSTUN_TICKS: 18,
   WEAPON_THROW_HITSTOP_TICKS: 4,
   WEAPON_FLIGHT_MAX_TICKS: 55,
-  WEAPON_RESPAWN_TICKS: 300, // 5.0 seconds after despawn
+  WEAPON_RESPAWN_TICKS: 90, // 1.5 seconds before a new weapon drops from the sky!
   WEAPON_MAX_DURABILITY: 100,
+  WEAPON_DURABILITY_COST_PER_HIT: 25,
 } as const;
 
 export const ATTACK_CONFIGS: Record<AttackId, AttackConfig> = {
