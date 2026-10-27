@@ -7,6 +7,8 @@ export class ArenaBuilder {
   private floatingMonoliths: { mesh: THREE.Object3D; baseY: number; phase: number; speed: number }[] = [];
   private runeMaterial!: THREE.MeshBasicMaterial;
   private altarRing!: THREE.Mesh;
+  private altarShaderMat: THREE.ShaderMaterial | null = null;
+  private vortexShaderMat: THREE.ShaderMaterial | null = null;
 
   public build(assets: AssetLoader, scene: THREE.Scene): THREE.Group {
     this.group.clear();
@@ -117,12 +119,94 @@ export class ArenaBuilder {
       this.group.add(cMesh);
     }
 
-    // Center Rift Altar Ring (Weapon Spawn Point at 0,0,0)
+    // Center Rift Altar Ring (Weapon Spawn Point at 0,0,0) + Custom GLSL Energy Disc (shader-dev)
     const ringGeo = new THREE.RingGeometry(1.15, 1.45, 32);
     ringGeo.rotateX(-Math.PI / 2);
     this.altarRing = new THREE.Mesh(ringGeo, this.runeMaterial);
     this.altarRing.position.set(0, 0.018, 0);
     this.group.add(this.altarRing);
+
+    this.altarShaderMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uTime: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv * 2.0 - 1.0;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        varying vec2 vUv;
+        void main() {
+          float r = length(vUv);
+          if (r > 1.0) discard;
+          float angle = atan(vUv.y, vUv.x);
+          float ring1 = smoothstep(0.06, 0.0, abs(r - 0.78));
+          float ring2 = smoothstep(0.05, 0.0, abs(r - 0.45));
+          float runes = step(0.35, sin(angle * 8.0 + uTime * 2.2)) * smoothstep(0.08, 0.0, abs(r - 0.62));
+          float pulse = 0.5 + 0.5 * sin(r * 14.0 - uTime * 3.8);
+          vec3 cyan = vec3(0.0, 0.94, 1.0);
+          vec3 violet = vec3(0.62, 0.31, 0.87);
+          vec3 col = mix(cyan, violet, r * 0.75) * (ring1 + ring2 + runes * 0.85 + pulse * 0.25 * (1.0 - r));
+          float alpha = (ring1 * 0.8 + ring2 * 0.65 + runes * 0.7 + (1.0 - r) * 0.22) * (1.0 - smoothstep(0.88, 1.0, r));
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
+    });
+    const altarDiscGeo = new THREE.PlaneGeometry(3.2, 3.2);
+    altarDiscGeo.rotateX(-Math.PI / 2);
+    const altarDisc = new THREE.Mesh(altarDiscGeo, this.altarShaderMat);
+    altarDisc.position.set(0, 0.016, 0);
+    this.group.add(altarDisc);
+
+    // Abyss Dimensional Rift Vortex below the floating island (GLSL procedural swirl shader)
+    this.vortexShaderMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uTime: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv * 2.0 - 1.0;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        varying vec2 vUv;
+        void main() {
+          float r = length(vUv);
+          if (r > 1.0) discard;
+          float theta = atan(vUv.y, vUv.x) + (1.0 - r) * 4.5 - uTime * 0.55;
+          float swirl1 = sin(theta * 3.0 + r * 8.0 - uTime * 1.4) * 0.5 + 0.5;
+          float swirl2 = cos(theta * 5.0 - r * 11.0 + uTime * 0.9) * 0.5 + 0.5;
+          float bands = pow(swirl1 * swirl2, 1.35);
+          vec3 cCyan = vec3(0.0, 0.94, 1.0);
+          vec3 cViolet = vec3(0.62, 0.31, 0.87);
+          vec3 cCrimson = vec3(1.0, 0.30, 0.16);
+          vec3 col = mix(cViolet, cCyan, swirl1);
+          col = mix(col, cCrimson, smoothstep(0.25, 0.85, r) * swirl2 * 0.65);
+          float coreGlow = smoothstep(0.45, 0.0, r) * 0.45;
+          float edgeFade = (1.0 - smoothstep(0.45, 1.0, r));
+          float alpha = (bands * 0.42 + coreGlow) * edgeFade;
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
+    });
+    const vortexGeo = new THREE.PlaneGeometry(38, 38);
+    vortexGeo.rotateX(-Math.PI / 2);
+    const vortexMesh = new THREE.Mesh(vortexGeo, this.vortexShaderMat);
+    vortexMesh.position.set(0, -9.2, -1.5);
+    this.group.add(vortexMesh);
 
     // Glowing rune lines connecting spawn pads to center altar
     const runeLineX = new THREE.Mesh(new THREE.PlaneGeometry(halfW * 1.6, 0.12), this.runeMaterial);
@@ -233,6 +317,12 @@ export class ArenaBuilder {
     }
     if (this.runeMaterial) {
       this.runeMaterial.opacity = 0.62 + Math.sin(elapsedSec * 2.8) * 0.18;
+    }
+    if (this.altarShaderMat) {
+      this.altarShaderMat.uniforms.uTime.value = elapsedSec;
+    }
+    if (this.vortexShaderMat) {
+      this.vortexShaderMat.uniforms.uTime.value = elapsedSec;
     }
   }
 }

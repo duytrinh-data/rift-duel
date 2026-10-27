@@ -225,6 +225,14 @@ class RiftDuelGameApp {
         break;
       case 'jump':
         this.sound.play('jump');
+        this.vfx?.spawnSmokeBurst(
+          evt.x,
+          Math.max(0.05, evt.y - 0.75),
+          evt.z,
+          4,
+          evt.sourceSlot === 1 ? 0x38bdf8 : 0xfb923c,
+          1.4
+        );
         break;
       case 'dodge':
         this.sound.play('dodge');
@@ -235,6 +243,14 @@ class RiftDuelGameApp {
           evt.sourceSlot === 1 ? 0x00f0ff : 0xff4d29,
           1.6,
           0.2
+        );
+        this.vfx?.spawnSmokeBurst(
+          evt.x,
+          Math.max(0.05, evt.y - 0.7),
+          evt.z,
+          5,
+          evt.sourceSlot === 1 ? 0x00f0ff : 0xff4d29,
+          2.0
         );
         break;
       case 'pickup':

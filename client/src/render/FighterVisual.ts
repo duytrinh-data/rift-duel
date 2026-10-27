@@ -83,10 +83,19 @@ export class FighterVisual {
   private airFlipTimer = 0;
   private airFlipDuration = 0.34;
 
-  // Procedural squash/stretch & tilt
+  // Procedural squash/stretch, tilt & skeletal bone modifier layer (scenario-godot-animation)
   private squashScale = new THREE.Vector3(1, 1, 1);
   private proceduralTiltX = 0;
   private proceduralTiltZ = 0;
+  private spineBone: THREE.Object3D | null = null;
+  private headBone: THREE.Object3D | null = null;
+  private rightArmBone: THREE.Object3D | null = null;
+  private leftArmBone: THREE.Object3D | null = null;
+  private baseBoneQuats = new Map<THREE.Object3D, THREE.Quaternion>();
+  private boneSpinePitch = 0;
+  private boneSpineTwist = 0;
+  private boneSpineRoll = 0;
+  private boneArmBoost = 0;
 
   // Spatial 3D readability indicators & combat VFX meshes
   private shadowBlob: THREE.Mesh;
@@ -276,6 +285,26 @@ export class FighterVisual {
 
     this.modelGroup.add(clonedScene);
 
+    // Discover & cache skeletal rig bones for procedural upper-body modifier layer
+    this.spineBone = null;
+    this.headBone = null;
+    this.rightArmBone = null;
+    this.leftArmBone = null;
+    this.baseBoneQuats.clear();
+
+    clonedScene.traverse((obj) => {
+      const n = obj.name.toLowerCase();
+      if (!this.spineBone && (n === 'chest' || n === 'spine' || n === 'torso')) {
+        this.spineBone = obj;
+      } else if (!this.headBone && n === 'head') {
+        this.headBone = obj;
+      } else if (!this.rightArmBone && (n === 'upperarm.r' || n === 'arm.r')) {
+        this.rightArmBone = obj;
+      } else if (!this.leftArmBone && (n === 'upperarm.l' || n === 'arm.l')) {
+        this.leftArmBone = obj;
+      }
+    });
+
     // Setup AnimationMixer for all 76 in-place skeletal animations
     this.mixer = new THREE.AnimationMixer(clonedScene);
     for (const clip of gltf.animations) {
@@ -377,11 +406,14 @@ export class FighterVisual {
       this.equippedBlade.visible = state.hasWeapon;
     }
 
+    // Roll back previous frame's procedural bone offsets before AnimationMixer samples tracks
+    this.restoreBaseBonePoses();
+
     // Choose matching animation clip for current fighter state
     this.updateAnimationForState(state);
     this.mixer?.update(dt);
 
-    // Procedural secondary motion: velocity lean, turn bank, air flip, squash & stretch, hitstop shake
+    // Procedural secondary motion: velocity lean, turn bank, air flip, squash & stretch, hitstop shake + bone modifiers
     this.updateProceduralSecondaryMotion(state, dt, elapsedSec);
 
     // Hit flash & Invulnerability visual feedback
@@ -542,6 +574,86 @@ export class FighterVisual {
     } else {
       this.modelGroup.position.set(0, 0, 0);
     }
+
+    // 5. Skeletal Bone Modifier Layer (Spine anticipation/strike twist, turn banking, combat breathing)
+    let angleDiff = state.facingAngle - this.prevFacingAngle;
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+    const turnRate = dt > 1e-4 ? THREE.MathUtils.clamp(angleDiff / dt, -12, 12) : 0;
+
+    let targetSpinePitch = 0;
+    let targetSpineTwist = 0;
+    let targetSpineRoll = THREE.MathUtils.clamp(-turnRate * 0.018, -0.18, 0.18);
+    let targetArmBoost = 0;
+
+    if (state.state === 'idle') {
+      targetSpinePitch = Math.sin(elapsedSec * 3.1 + this.slot) * 0.035;
+      targetSpineTwist = Math.cos(elapsedSec * 1.55 + this.slot) * 0.04;
+    } else if (state.state === 'move') {
+      targetSpinePitch = THREE.MathUtils.clamp(forwardSpeed * 0.028, -0.16, 0.22);
+      targetSpineTwist = THREE.MathUtils.clamp(-strafeSpeed * 0.03 + turnRate * 0.015, -0.22, 0.22);
+    } else if (state.state === 'attack_startup') {
+      // Anticipation coil-back before strike
+      targetSpinePitch = -0.22;
+      targetSpineTwist = -0.34;
+      targetArmBoost = -0.38;
+    } else if (state.state === 'attack_active') {
+      // Explosive strike follow-through
+      const isRecovery = state.activeAttackId.includes('recovery');
+      targetSpinePitch = isRecovery ? -0.18 : 0.28;
+      targetSpineTwist = isRecovery ? Math.sin(elapsedSec * 38) * 0.55 : 0.42;
+      targetArmBoost = 0.45;
+    } else if (state.state === 'attack_recovery') {
+      targetSpinePitch = 0.1;
+      targetSpineTwist = 0.14;
+      targetArmBoost = 0.12;
+    } else if (state.state === 'dodge') {
+      targetSpinePitch = 0.26;
+    } else if (state.state === 'hitstun') {
+      targetSpinePitch = -0.28;
+      targetSpineTwist = Math.sin(elapsedSec * 45) * 0.18;
+    }
+
+    const boneBlend = 1 - Math.exp(-22 * dt);
+    this.boneSpinePitch += (targetSpinePitch - this.boneSpinePitch) * boneBlend;
+    this.boneSpineTwist += (targetSpineTwist - this.boneSpineTwist) * boneBlend;
+    this.boneSpineRoll += (targetSpineRoll - this.boneSpineRoll) * boneBlend;
+    this.boneArmBoost += (targetArmBoost - this.boneArmBoost) * boneBlend;
+
+    this.applyBoneModifiers();
+  }
+
+  private restoreBaseBonePoses(): void {
+    for (const [bone, quat] of this.baseBoneQuats.entries()) {
+      bone.quaternion.copy(quat);
+    }
+  }
+
+  private applyBoneModifiers(): void {
+    const euler = new THREE.Euler();
+    const modQuat = new THREE.Quaternion();
+
+    if (this.spineBone) {
+      this.baseBoneQuats.set(this.spineBone, this.spineBone.quaternion.clone());
+      euler.set(this.boneSpinePitch, this.boneSpineTwist, this.boneSpineRoll, 'YXZ');
+      modQuat.setFromEuler(euler);
+      this.spineBone.quaternion.multiply(modQuat);
+    }
+
+    if (this.headBone) {
+      this.baseBoneQuats.set(this.headBone, this.headBone.quaternion.clone());
+      // Counter-rotate head slightly so fighter keeps eyes locked forward on opponent
+      euler.set(-this.boneSpinePitch * 0.45, -this.boneSpineTwist * 0.5, 0, 'YXZ');
+      modQuat.setFromEuler(euler);
+      this.headBone.quaternion.multiply(modQuat);
+    }
+
+    if (this.rightArmBone && Math.abs(this.boneArmBoost) > 0.005) {
+      this.baseBoneQuats.set(this.rightArmBone, this.rightArmBone.quaternion.clone());
+      euler.set(this.boneArmBoost, 0, this.boneArmBoost * 0.35, 'XYZ');
+      modQuat.setFromEuler(euler);
+      this.rightArmBone.quaternion.multiply(modQuat);
+    }
   }
 
   private updateAnimationForState(state: FighterRenderInput): void {
@@ -574,22 +686,24 @@ export class FighterVisual {
         const forward = state.vx * fx + state.vz * fz;
         const strafe = state.vx * fz - state.vz * fx;
         const speedXZ = Math.hypot(state.vx, state.vz);
-        const rate = THREE.MathUtils.clamp(speedXZ / 7.2, 0.85, 1.38);
+        // No-slide foot-speed matched playback (scenario-godot-animation Stance #1: 1.45 m/s walk, 5.4 m/s run)
+        const runRate = THREE.MathUtils.clamp(speedXZ / 5.6, 0.88, 1.48);
+        const walkRate = THREE.MathUtils.clamp(speedXZ / 2.2, 0.85, 1.45);
 
         if (Math.abs(strafe) > Math.abs(forward) * 1.25 && speedXZ > 2.0) {
           this.playAnimation(
             strafe > 0 ? 'Running_Strafe_Right' : 'Running_Strafe_Left',
             true,
-            rate,
+            runRate,
             false,
             0.1
           );
         } else if (forward < -1.5) {
-          this.playAnimation('Walking_Backwards', true, rate * 1.15, false, 0.1);
+          this.playAnimation('Walking_Backwards', true, walkRate, false, 0.1);
         } else if (speedXZ < 3.2) {
-          this.playAnimation('Walking_A', true, 1.15, false, 0.1);
+          this.playAnimation('Walking_A', true, walkRate, false, 0.1);
         } else {
-          this.playAnimation(state.hasWeapon ? 'Running_A' : 'Running_B', true, rate, false, 0.1);
+          this.playAnimation(state.hasWeapon ? 'Running_A' : 'Running_B', true, runRate, false, 0.1);
         }
         break;
       }

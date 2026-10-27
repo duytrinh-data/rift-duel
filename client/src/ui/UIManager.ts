@@ -40,6 +40,12 @@ export class UIManager {
   private lastSummary: RoomViewSummary | null = null;
   private isLocalPractice = false;
   private lastRenderSig = '';
+  private prevP1Damage = 0;
+  private prevP2Damage = 0;
+  private prevCountdownText = '';
+  private p1DmgBumpTimeout = 0;
+  private p2DmgBumpTimeout = 0;
+  private countdownPopTimeout = 0;
 
   constructor(
     root: HTMLElement,
@@ -136,7 +142,7 @@ export class UIManager {
           <h1 class="hero-title" style="font-size: 2.3rem;">RIFT DUEL</h1>
           <p class="hero-subtitle" style="margin-bottom: 14px;">${label}</p>
           <div class="loading-bar-track">
-            <div class="loading-bar-fill" style="width: ${percent}%;"></div>
+            <div class="loading-bar-fill" style="transform: scaleX(${Math.max(0, Math.min(1, percent / 100))});"></div>
           </div>
           <div style="font-family: var(--font-display); font-weight: 700; color: var(--aether-cyan);">
             ${percent}%
@@ -728,20 +734,28 @@ export class UIManager {
           <div id="hud-center-banner" class="center-announcement"></div>
 
           <div class="hud-bottom">
-            <div class="fighter-hud-card p1">
+            <div id="hud-card-p1" class="fighter-hud-card p1">
               <div class="fighter-hud-info">
                 <div id="hud-p1-name" class="fighter-hud-name" style="color: var(--aether-cyan);">P1</div>
-                <div id="hud-p1-stocks" class="stocks-row"></div>
+                <div id="hud-p1-stocks" class="stocks-row">
+                  <span class="stock-orb active-p1" data-stock-active="true"></span>
+                  <span class="stock-orb active-p1" data-stock-active="true"></span>
+                  <span class="stock-orb active-p1" data-stock-active="true"></span>
+                </div>
                 <div id="hud-p1-weapon" style="font-size: 0.74rem; color: var(--muted-steel);">Tay không</div>
               </div>
               <div id="hud-p1-dmg" class="damage-readout">0%</div>
             </div>
 
-            <div class="fighter-hud-card p2">
+            <div id="hud-card-p2" class="fighter-hud-card p2">
               <div id="hud-p2-dmg" class="damage-readout">0%</div>
               <div class="fighter-hud-info" style="align-items: flex-end;">
                 <div id="hud-p2-name" class="fighter-hud-name" style="color: var(--ember-crimson);">P2</div>
-                <div id="hud-p2-stocks" class="stocks-row"></div>
+                <div id="hud-p2-stocks" class="stocks-row">
+                  <span class="stock-orb active-p2" data-stock-active="true"></span>
+                  <span class="stock-orb active-p2" data-stock-active="true"></span>
+                  <span class="stock-orb active-p2" data-stock-active="true"></span>
+                </div>
                 <div id="hud-p2-weapon" style="font-size: 0.74rem; color: var(--muted-steel);">Tay không</div>
               </div>
             </div>
@@ -855,14 +869,25 @@ export class UIManager {
     const centerEl = document.getElementById('hud-center-banner');
     if (centerEl) {
       if (s.phase === 'countdown') {
-        centerEl.textContent = s.countdownSeconds > 0 ? String(s.countdownSeconds) : 'CHIẾN ĐẤU!';
+        const nextText = s.countdownSeconds > 0 ? String(s.countdownSeconds) : 'CHIẾN ĐẤU!';
+        if (nextText !== this.prevCountdownText) {
+          this.prevCountdownText = nextText;
+          centerEl.textContent = nextText;
+          centerEl.classList.add('countdown-pop');
+          if (this.countdownPopTimeout) window.clearTimeout(this.countdownPopTimeout);
+          this.countdownPopTimeout = window.setTimeout(() => {
+            centerEl.classList.remove('countdown-pop');
+          }, 150);
+        }
       } else if (s.phase === 'paused_disconnect') {
+        this.prevCountdownText = '';
         centerEl.innerHTML = `
           <div style="font-size: 1.7rem; background: rgba(7,9,19,0.9); padding: 16px 26px; border-radius: 10px; border: 1px solid var(--runic-gold);">
             ĐỐI THỦ MẤT KẾT NỐI — Chờ kết nối lại (${s.disconnectGraceSeconds}s)...
           </div>
         `;
       } else {
+        this.prevCountdownText = '';
         centerEl.textContent = '';
       }
     }
@@ -873,20 +898,31 @@ export class UIManager {
     if (p1) {
       const n1 = document.getElementById('hud-p1-name');
       const d1 = document.getElementById('hud-p1-dmg');
+      const c1 = document.getElementById('hud-card-p1');
       const st1 = document.getElementById('hud-p1-stocks');
       const w1 = document.getElementById('hud-p1-weapon');
       if (n1) n1.textContent = `P1 · ${p1.nickname}`;
       if (d1) {
         d1.textContent = `${p1.damage}%`;
         d1.style.color = this.getDamageColor(p1.damage);
+        if (p1.damage > this.prevP1Damage) {
+          d1.classList.add('dmg-bump');
+          c1?.classList.add('hud-hit-shake');
+          if (this.p1DmgBumpTimeout) window.clearTimeout(this.p1DmgBumpTimeout);
+          this.p1DmgBumpTimeout = window.setTimeout(() => {
+            d1.classList.remove('dmg-bump');
+            c1?.classList.remove('hud-hit-shake');
+          }, 150);
+        }
+        this.prevP1Damage = p1.damage;
       }
       if (st1) {
-        st1.innerHTML = [0, 1, 2]
-          .map(
-            (i) =>
-              `<span class="stock-orb ${i < p1.stocks ? 'active-p1' : ''}" data-stock-active="${i < p1.stocks}"></span>`
-          )
-          .join('');
+        const orbs = st1.querySelectorAll('.stock-orb');
+        orbs.forEach((orb, i) => {
+          const active = i < p1.stocks;
+          orb.classList.toggle('active-p1', active);
+          orb.setAttribute('data-stock-active', String(active));
+        });
       }
       if (w1) {
         w1.textContent = p1.hasWeapon ? '⚔ Đang cầm RIFT BLADE [E: Ném]' : 'Tay không [E: Nhặt kiếm]';
@@ -897,20 +933,31 @@ export class UIManager {
     if (p2) {
       const n2 = document.getElementById('hud-p2-name');
       const d2 = document.getElementById('hud-p2-dmg');
+      const c2 = document.getElementById('hud-card-p2');
       const st2 = document.getElementById('hud-p2-stocks');
       const w2 = document.getElementById('hud-p2-weapon');
       if (n2) n2.textContent = `P2 · ${p2.nickname}`;
       if (d2) {
         d2.textContent = `${p2.damage}%`;
         d2.style.color = this.getDamageColor(p2.damage);
+        if (p2.damage > this.prevP2Damage) {
+          d2.classList.add('dmg-bump');
+          c2?.classList.add('hud-hit-shake');
+          if (this.p2DmgBumpTimeout) window.clearTimeout(this.p2DmgBumpTimeout);
+          this.p2DmgBumpTimeout = window.setTimeout(() => {
+            d2.classList.remove('dmg-bump');
+            c2?.classList.remove('hud-hit-shake');
+          }, 150);
+        }
+        this.prevP2Damage = p2.damage;
       }
       if (st2) {
-        st2.innerHTML = [0, 1, 2]
-          .map(
-            (i) =>
-              `<span class="stock-orb ${i < p2.stocks ? 'active-p2' : ''}" data-stock-active="${i < p2.stocks}"></span>`
-          )
-          .join('');
+        const orbs = st2.querySelectorAll('.stock-orb');
+        orbs.forEach((orb, i) => {
+          const active = i < p2.stocks;
+          orb.classList.toggle('active-p2', active);
+          orb.setAttribute('data-stock-active', String(active));
+        });
       }
       if (w2) {
         w2.textContent = p2.hasWeapon ? '⚔ Đang cầm RIFT BLADE' : 'Tay không';

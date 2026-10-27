@@ -14,8 +14,10 @@ export class SceneManager {
 
   private quality: GraphicsQuality = 'high';
   private screenShakeEnabled = true;
-  private shakeIntensity = 0;
-  private shakeTimer = 0;
+  private trauma = 0;
+  private shakeSeedTime = 0;
+  private fovPunchOffset = 0;
+  private readonly baseFov = 46;
 
   private camTargetPos = new THREE.Vector3(0, 10.5, 14.5);
   private camTargetLook = new THREE.Vector3(0, 0.8, 0);
@@ -120,10 +122,14 @@ export class SceneManager {
     this.dirLight.castShadow = this.quality === 'high';
   }
 
-  public triggerCameraShake(intensity: number, durationSec = 0.18): void {
+  public triggerCameraShake(intensity: number, _durationSec = 0.18): void {
     if (!this.screenShakeEnabled) return;
-    this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
-    this.shakeTimer = Math.max(this.shakeTimer, durationSec);
+    // Trauma-squared model (scenario-godot-vfx): additive trauma clamped to [0, 1] + subtle FOV punch
+    const addedTrauma = THREE.MathUtils.clamp(intensity * 1.65, 0.15, 0.95);
+    this.trauma = Math.min(1.0, this.trauma + addedTrauma);
+    if (intensity >= 0.25) {
+      this.fovPunchOffset = Math.max(this.fovPunchOffset, Math.min(2.2, intensity * 4.2));
+    }
   }
 
   /**
@@ -158,15 +164,28 @@ export class SceneManager {
     this.camera.position.lerp(this.camTargetPos, smooth);
     this.camCurrentLook.lerp(this.camTargetLook, smooth);
 
-    if (this.shakeTimer > 0) {
-      this.shakeTimer = Math.max(0, this.shakeTimer - dt);
-      const ox = (Math.random() - 0.5) * 2 * this.shakeIntensity;
-      const oy = (Math.random() - 0.5) * 2 * this.shakeIntensity;
+    // Smooth multi-frequency trauma-squared 3D camera shake + decay (1.8/s per scenario-godot-vfx)
+    this.shakeSeedTime += dt;
+    if (this.trauma > 0) {
+      const shake = this.trauma * this.trauma;
+      const t = this.shakeSeedTime * 38.0;
+      const ox = (Math.sin(t * 1.13) * 0.6 + Math.cos(t * 2.41) * 0.4) * 0.34 * shake;
+      const oy = (Math.cos(t * 1.37) * 0.6 + Math.sin(t * 2.83) * 0.4) * 0.24 * shake;
+      const oz = Math.sin(t * 1.79) * 0.14 * shake;
       this.camera.position.x += ox;
       this.camera.position.y += oy;
-      if (this.shakeTimer <= 0) {
-        this.shakeIntensity = 0;
-      }
+      this.camera.position.z += oz;
+      this.trauma = Math.max(0, this.trauma - 2.1 * dt);
+    }
+
+    if (this.fovPunchOffset > 0.01) {
+      this.fovPunchOffset *= Math.exp(-14 * dt);
+      this.camera.fov = this.baseFov - this.fovPunchOffset;
+      this.camera.updateProjectionMatrix();
+    } else if (this.camera.fov !== this.baseFov) {
+      this.fovPunchOffset = 0;
+      this.camera.fov = this.baseFov;
+      this.camera.updateProjectionMatrix();
     }
 
     this.camera.lookAt(this.camCurrentLook);

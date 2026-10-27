@@ -14,6 +14,14 @@
   --border-subtle: rgba(148, 163, 184, 0.22);
   --font-display: 'Chakra Petch', system-ui, -apple-system, sans-serif;
   --font-body: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+
+  /* Emil Kowalski Design Engineering Motion Tokens */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-press: 140ms;
+  --duration-ui: 180ms;
+  --duration-modal: 220ms;
 }
 
 * {
@@ -57,7 +65,7 @@ body,
   pointer-events: auto;
 }
 
-/* Mandatory visible keyboard focus indicator across all focusable elements */
+/* Mandatory visible keyboard focus indicator across all focusable elements (instant for 100+/day keyboard nav) */
 [data-nav]:focus,
 button:focus,
 input:focus,
@@ -95,6 +103,7 @@ input:focus,
   background: var(--aether-cyan);
   transform: rotate(45deg);
   box-shadow: 0 0 10px var(--aether-cyan);
+  transition: transform var(--duration-ui) var(--ease-out);
 }
 
 .net-pill-group {
@@ -113,6 +122,14 @@ input:focus,
   background: rgba(15, 23, 42, 0.85);
   border: 1px solid var(--border-subtle);
   font-variant-numeric: tabular-nums;
+  transition:
+    transform var(--duration-press) var(--ease-out),
+    background-color var(--duration-ui) ease,
+    border-color var(--duration-ui) ease;
+}
+
+button.net-pill:active {
+  transform: scale(0.97);
 }
 
 .net-dot {
@@ -121,6 +138,7 @@ input:focus,
   border-radius: 50%;
   background: var(--emerald-ok);
   box-shadow: 0 0 8px var(--emerald-ok);
+  transition: background-color var(--duration-ui) ease, box-shadow var(--duration-ui) ease;
 }
 
 .net-dot.warn {
@@ -153,6 +171,17 @@ input:focus,
   padding: 28px 32px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   position: relative;
+  transform-origin: center center;
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  transition:
+    opacity var(--duration-modal) var(--ease-out),
+    transform var(--duration-modal) var(--ease-out);
+
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
 }
 
 .hero-header {
@@ -208,6 +237,7 @@ input:focus,
   font-size: 1.05rem;
   letter-spacing: 0.04em;
   user-select: text;
+  transition: border-color var(--duration-ui) ease, background-color var(--duration-ui) ease;
 }
 
 .btn-row {
@@ -230,11 +260,26 @@ input:focus,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  transform: scale(1);
+  transition:
+    transform var(--duration-press) var(--ease-out),
+    background-color var(--duration-ui) ease,
+    border-color var(--duration-ui) ease;
 }
 
-.rift-btn:hover {
-  background: rgba(51, 65, 85, 0.92);
+.rift-btn:active,
+.rift-btn.is-pressed {
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .rift-btn:hover {
+    background: rgba(51, 65, 85, 0.92);
+    border-color: rgba(0, 240, 255, 0.48);
+  }
+  .arch-btn:hover {
+    border-color: rgba(255, 255, 255, 0.38);
+  }
 }
 
 .rift-btn.primary {
@@ -262,7 +307,7 @@ input:focus,
   color: var(--aether-cyan);
 }
 
-/* Error / Info Alert Box */
+/* Error / Info Alert Box — Interruptible transition + @starting-style */
 .status-banner {
   margin-bottom: 16px;
   padding: 11px 14px;
@@ -272,6 +317,18 @@ input:focus,
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  transition:
+    opacity var(--duration-ui) var(--ease-out),
+    transform var(--duration-ui) var(--ease-out),
+    background-color var(--duration-ui) ease,
+    border-color var(--duration-ui) ease;
+
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
 }
 
 .status-banner.error {
@@ -336,6 +393,21 @@ input:focus,
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
   padding: 16px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity var(--duration-modal) var(--ease-out),
+    transform var(--duration-modal) var(--ease-out),
+    border-color var(--duration-ui) ease;
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+.slot-card:nth-child(2) {
+  transition-delay: 45ms;
 }
 
 .slot-card.p1 {
@@ -367,6 +439,10 @@ input:focus,
   border-radius: 4px;
   background: rgba(148, 163, 184, 0.2);
   color: var(--muted-steel);
+  transition:
+    transform var(--duration-press) var(--ease-out),
+    background-color var(--duration-ui) ease,
+    color var(--duration-ui) ease;
 }
 
 .ready-badge.is-ready {
@@ -390,6 +466,15 @@ input:focus,
   color: var(--ivory-ink);
   text-align: left;
   cursor: pointer;
+  transform: scale(1);
+  transition:
+    transform var(--duration-press) var(--ease-out),
+    background-color var(--duration-ui) ease,
+    border-color var(--duration-ui) ease;
+}
+
+.arch-btn:active {
+  transform: scale(0.97);
 }
 
 .arch-btn.selected-cyan {
@@ -459,6 +544,25 @@ input:focus,
   display: flex;
   justify-content: space-between;
   align-items: center;
+  transform: translateY(0) scale(1);
+  opacity: 1;
+  transition:
+    transform var(--duration-press) var(--ease-out),
+    opacity var(--duration-modal) var(--ease-out),
+    border-color var(--duration-ui) ease;
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+}
+
+.fighter-hud-card.p2 {
+  transition-delay: 40ms;
+}
+
+.fighter-hud-card.hud-hit-shake {
+  transform: translateY(-4px) scale(1.035);
 }
 
 .fighter-hud-card.p1 {
@@ -490,17 +594,27 @@ input:focus,
   width: 14px;
   height: 14px;
   border-radius: 3px;
-  transform: rotate(45deg);
+  transform: rotate(45deg) scale(0.78);
+  opacity: 0.45;
   background: rgba(148, 163, 184, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.25);
+  transition:
+    transform var(--duration-ui) var(--ease-out),
+    opacity var(--duration-ui) var(--ease-out),
+    background-color var(--duration-ui) ease,
+    box-shadow var(--duration-ui) ease;
 }
 
 .stock-orb.active-p1 {
+  transform: rotate(45deg) scale(1);
+  opacity: 1;
   background: var(--aether-cyan);
   box-shadow: 0 0 10px var(--aether-cyan);
 }
 
 .stock-orb.active-p2 {
+  transform: rotate(45deg) scale(1);
+  opacity: 1;
   background: var(--ember-crimson);
   box-shadow: 0 0 10px var(--ember-crimson);
 }
@@ -511,6 +625,19 @@ input:focus,
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  transform: scale(1);
+  transform-origin: right center;
+  transition:
+    transform var(--duration-press) var(--ease-out),
+    color var(--duration-ui) ease;
+}
+
+.fighter-hud-card.p2 .damage-readout {
+  transform-origin: left center;
+}
+
+.damage-readout.dmg-bump {
+  transform: scale(1.22);
 }
 
 /* Countdown & Center Announcements */
@@ -518,7 +645,7 @@ input:focus,
   position: fixed;
   top: 38%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(1);
   font-family: var(--font-display);
   font-size: 4.5rem;
   font-weight: 700;
@@ -526,6 +653,11 @@ input:focus,
   text-shadow: 0 0 32px rgba(0, 240, 255, 0.8), 0 8px 24px rgba(0, 0, 0, 0.9);
   pointer-events: none;
   text-align: center;
+  transition: transform var(--duration-press) var(--ease-out), opacity var(--duration-press) var(--ease-out);
+}
+
+.center-announcement.countdown-pop {
+  transform: translate(-50%, -50%) scale(1.14);
 }
 
 /* Controls Legend Bar */
@@ -547,7 +679,7 @@ input:focus,
   gap: 5px;
 }
 
-/* Loading Progress Bar */
+/* Loading Progress Bar — GPU-accelerated scaleX instead of layout-thrashing width */
 .loading-bar-track {
   width: 100%;
   height: 10px;
@@ -559,7 +691,33 @@ input:focus,
 }
 
 .loading-bar-fill {
+  width: 100%;
   height: 100%;
   background: linear-gradient(90deg, var(--aether-cyan), var(--rift-violet));
-  transition: width 0.2s ease;
+  transform-origin: left center;
+  transition: transform var(--duration-ui) var(--ease-out);
+}
+
+/* Accessibility: Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  .rift-panel,
+  .status-banner,
+  .slot-card,
+  .fighter-hud-card,
+  .rift-btn,
+  .arch-btn,
+  .stock-orb,
+  .damage-readout,
+  .center-announcement {
+    transition-property: opacity, background-color, border-color, color !important;
+    transform: none !important;
+  }
+  .center-announcement {
+    transform: translate(-50%, -50%) !important;
+  }
+  .stock-orb,
+  .stock-orb.active-p1,
+  .stock-orb.active-p2 {
+    transform: rotate(45deg) !important;
+  }
 }
